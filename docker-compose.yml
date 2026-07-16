@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ortu
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ortu_local_pw}
+      POSTGRES_DB: ortu
+    volumes:
+      - ortu_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ortu -d ortu"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://ortu:${POSTGRES_PASSWORD:-ortu_local_pw}@db:5432/ortu
+      GOCARDLESS_ENVIRONMENT: ${GOCARDLESS_ENVIRONMENT:-sandbox}
+      GOCARDLESS_ACCESS_TOKEN: ${GOCARDLESS_ACCESS_TOKEN:-}
+      GOCARDLESS_WEBHOOK_ENDPOINT_SECRET: ${GOCARDLESS_WEBHOOK_ENDPOINT_SECRET:-}
+      ORTU_FITNESS_ADMIN_KEY: ${ORTU_FITNESS_ADMIN_KEY:-}
+      ORTU_FITNESS_PUBLIC_URL: ${ORTU_FITNESS_PUBLIC_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8000}:8000"
+    restart: unless-stopped
+
+volumes:
+  ortu_db:

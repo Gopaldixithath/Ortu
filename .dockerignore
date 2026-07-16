@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+.git
+.gitignore
+.venv
+venv
+.env
+*.md
+docs
