@@ -124,14 +124,14 @@ function App() {
 
     <footer><div><Mark /><p>Small-group health and fitness with room for everyone to progress.</p></div><div><b>EXPLORE</b><a href="#classes">Classes</a><a href="#memberships">Memberships</a><a href="#about">Why ORTU</a></div><div><b>MEMBERS</b><button onClick={() => setShowMember(true)}>My bookings</button><button onClick={() => setShowAdmin(true)}>Studio login</button></div><div><b>PAYMENTS</b><p>Securely processed by GoCardless</p><p>Cancellation cutoff: 1 hour</p></div></footer>
 
-    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
+    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} phoneForLogin={site.member_login_enabled} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
     {bookingSession && <BookingModal session={bookingSession} membershipToken={membershipToken} onClose={() => setBookingSession(null)} onBooked={() => { setBookingSession(null); loadSite(); setNotice('Class booked — we look forward to seeing you.'); setShowMember(true) }} />}
-    {showMember && <MemberModal initialToken={membershipToken} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
+    {showMember && <MemberModal initialToken={membershipToken} loginEnabled={site.member_login_enabled} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
     {showAdmin && <AdminModal onClose={() => setShowAdmin(false)} onChanged={loadSite} />}
   </div>
 }
 
-function JoinModal({ plan, paymentsReady, onClose, setNotice }) {
+function JoinModal({ plan, paymentsReady, phoneForLogin, onClose, setNotice }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState('')
   const submit = async (event) => {
     event.preventDefault(); setBusy(true); setError('')
@@ -142,7 +142,7 @@ function JoinModal({ plan, paymentsReady, onClose, setNotice }) {
       window.location.assign(data.checkout_url)
     } catch (e) { setError(e.message); setBusy(false) }
   }
-  return <Modal title={`Join with ${plan.name}`} onClose={onClose}><div className="checkoutSummary"><span>{plan.description}</span><b>{plan.price}{plan.billing_kind === 'recurring' ? ' monthly' : ''}</b></div><form className="form" onSubmit={submit}><div className="twoCols"><label>First name<input required name="first_name" autoComplete="given-name" /></label><label>Last name<input required name="last_name" autoComplete="family-name" /></label></div><label>Email address<input required type="email" name="email" autoComplete="email" /></label><label>Mobile number <small>optional</small><input name="phone" type="tel" autoComplete="tel" /></label><label className="check"><input type="checkbox" name="marketing_opt_in" /><span>Send me useful ORTU updates and offers.</span></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || !paymentsReady}>{busy ? 'Opening secure payment…' : paymentsReady ? 'Continue to GoCardless' : 'Payments not yet connected'}</button><p className="fineprint">Your bank details are entered on GoCardless’s secure hosted payment page. ORTU does not store them.</p></form></Modal>
+  return <Modal title={`Join with ${plan.name}`} onClose={onClose}><div className="checkoutSummary"><span>{plan.description}</span><b>{plan.price}{plan.billing_kind === 'recurring' ? ' monthly' : ''}</b></div><form className="form" onSubmit={submit}><div className="twoCols"><label>First name<input required name="first_name" autoComplete="given-name" /></label><label>Last name<input required name="last_name" autoComplete="family-name" /></label></div><label>Email address<input required type="email" name="email" autoComplete="email" /></label><label>Mobile number <small>{phoneForLogin ? 'with country code — you log in to your bookings with it' : 'optional'}</small><input name="phone" type="tel" autoComplete="tel" required={phoneForLogin} placeholder="+44 7700 900123" /></label><label className="check"><input type="checkbox" name="marketing_opt_in" /><span>Send me useful ORTU updates and offers.</span></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || !paymentsReady}>{busy ? 'Opening secure payment…' : paymentsReady ? 'Continue to GoCardless' : 'Payments not yet connected'}</button><p className="fineprint">Your bank details are entered on GoCardless’s secure hosted payment page. ORTU does not store them.</p></form></Modal>
 }
 
 function BookingModal({ session, membershipToken, onClose, onBooked }) {
@@ -151,12 +151,36 @@ function BookingModal({ session, membershipToken, onClose, onBooked }) {
   return <Modal title="Confirm your class" onClose={onClose}><div className="bookingConfirm"><span className="pill">{session.coach_name}</span><h3>{session.name}</h3><p>{formatDate(session.start_at)}</p><p>{session.location}</p><div className="bookingRule"><b>{session.remaining} spaces currently available</b><span>Bookings are confirmed live and cannot exceed the class capacity.</span></div>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy} onClick={confirm}>{busy ? 'Securing your space…' : 'Confirm booking'}</button></div></Modal>
 }
 
-function MemberModal({ initialToken, onToken, onClose, onChanged }) {
+function MemberModal({ initialToken, loginEnabled, onToken, onClose, onChanged }) {
   const [token, setToken] = useState(initialToken); const [dashboard, setDashboard] = useState(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
+  const [mode, setMode] = useState(loginEnabled ? 'phone' : 'code')
+  const [phone, setPhone] = useState(''); const [channel, setChannel] = useState('whatsapp'); const [sent, setSent] = useState(false); const [otp, setOtp] = useState('')
   const load = async (value = token) => { setBusy(true); setError(''); try { const data = await request(`/member?membership_token=${encodeURIComponent(value)}`); setDashboard(data); onToken(value) } catch (e) { setError(e.message) } finally { setBusy(false) } }
   useEffect(() => { if (initialToken) load(initialToken) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const sendCode = async () => { setBusy(true); setError(''); try { await request('/member/login/start', { method: 'POST', body: JSON.stringify({ phone, channel }) }); setSent(true) } catch (e) { setError(e.message) } finally { setBusy(false) } }
+  const verifyCode = async () => { setBusy(true); setError(''); try { const data = await request('/member/login/verify', { method: 'POST', body: JSON.stringify({ phone, code: otp }) }); setToken(data.membership_token); await load(data.membership_token) } catch (e) { setError(e.message); setBusy(false) } }
   const cancel = async (bookingId) => { if (!window.confirm('Cancel this class? Your credit will be restored.')) return; try { await request(`/bookings/${bookingId}/cancel`, { method: 'POST', body: JSON.stringify({ membership_token: token }) }); await load(); onChanged() } catch (e) { setError(e.message) } }
-  return <Modal title="My ORTU bookings" onClose={onClose}>{!dashboard ? <div className="form"><label>Membership access code<input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste the code saved after joining" /></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || token.length < 20} onClick={() => load()}>{busy ? 'Loading…' : 'Open my membership'}</button></div> : <div className="memberArea"><div className="memberHeader"><div><p>Welcome back</p><h3>{dashboard.member.first_name}</h3></div><div><span>{dashboard.membership.plan_name}</span><b>{dashboard.membership.remaining_classes == null ? 'Unlimited classes' : `${dashboard.membership.remaining_classes} credits left`}</b></div></div><h4>Upcoming bookings</h4>{dashboard.bookings.length ? dashboard.bookings.map((booking) => <article className="memberBooking" key={booking.booking_id}><div><b>{booking.session.name}</b><span>{formatDate(booking.session.start_at)}</span></div><button disabled={!booking.can_cancel} onClick={() => cancel(booking.booking_id)}>{booking.can_cancel ? 'Cancel booking' : 'Cancellation closed'}</button></article>) : <p className="emptySmall">No classes booked yet. Close this window and choose one from the timetable.</p>}{error && <p className="formError">{error}</p>}</div>}</Modal>
+  return <Modal title="My ORTU bookings" onClose={onClose}>{!dashboard ? <div className="form">
+    {mode === 'phone' ? <>
+      <label>Mobile number<input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900123" autoComplete="tel" disabled={sent} /></label>
+      {!sent ? <>
+        <div className="channelPick"><span>Send my code by</span><button type="button" className={channel === 'whatsapp' ? 'active' : ''} onClick={() => setChannel('whatsapp')}>WhatsApp</button><button type="button" className={channel === 'sms' ? 'active' : ''} onClick={() => setChannel('sms')}>SMS</button></div>
+        {error && <p className="formError">{error}</p>}
+        <button className="button wide" disabled={busy || phone.trim().length < 7} onClick={sendCode}>{busy ? 'Sending…' : `Send code by ${channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`}</button>
+      </> : <>
+        <label>Enter the 6-digit code we sent you<input inputMode="numeric" value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="123456" /></label>
+        {error && <p className="formError">{error}</p>}
+        <button className="button wide" disabled={busy || otp.trim().length < 4} onClick={verifyCode}>{busy ? 'Checking…' : 'Open my bookings'}</button>
+        <button type="button" className="linkButton" onClick={() => { setSent(false); setOtp(''); setError('') }}>Use a different number or resend</button>
+      </>}
+      <button type="button" className="linkButton" onClick={() => { setMode('code'); setError('') }}>Have a membership access code instead?</button>
+    </> : <>
+      <label>Membership access code<input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste the code saved after joining" /></label>
+      {error && <p className="formError">{error}</p>}
+      <button className="button wide" disabled={busy || token.length < 20} onClick={() => load()}>{busy ? 'Loading…' : 'Open my membership'}</button>
+      {loginEnabled && <button type="button" className="linkButton" onClick={() => { setMode('phone'); setError('') }}>Log in with my mobile number instead</button>}
+    </>}
+  </div> : <div className="memberArea"><div className="memberHeader"><div><p>Welcome back</p><h3>{dashboard.member.first_name}</h3></div><div><span>{dashboard.membership.plan_name}</span><b>{dashboard.membership.remaining_classes == null ? 'Unlimited classes' : `${dashboard.membership.remaining_classes} credits left`}</b></div></div><h4>Upcoming bookings</h4>{dashboard.bookings.length ? dashboard.bookings.map((booking) => <article className="memberBooking" key={booking.booking_id}><div><b>{booking.session.name}</b><span>{formatDate(booking.session.start_at)}</span></div><button disabled={!booking.can_cancel} onClick={() => cancel(booking.booking_id)}>{booking.can_cancel ? 'Cancel booking' : 'Cancellation closed'}</button></article>) : <p className="emptySmall">No classes booked yet. Close this window and choose one from the timetable.</p>}{error && <p className="formError">{error}</p>}</div>}</Modal>
 }
 
 const ADMIN_KEY_STORE = 'ortu_admin_key'

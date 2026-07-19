@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import gocardless
+from app import gocardless, twilio_verify
 from app.booking_rules import (
     FitnessRuleError,
     ensure_booking_window,
@@ -46,6 +46,36 @@ def _hash_token(value: str) -> str:
 
 def _new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def _normalize_phone(value: str) -> str:
+    raw = str(value or "").strip()
+    plus = raw.startswith("+")
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+        plus = True
+    if not plus and digits.startswith("07") and len(digits) == 11:
+        digits = f"44{digits[1:]}"
+        plus = True
+    if not plus or not 8 <= len(digits) <= 15:
+        raise HTTPException(status_code=422, detail="Enter the mobile number with its country code, e.g. +44 7700 900123.")
+    return f"+{digits}"
+
+
+def _member_by_phone(db: Session, phone_e164: str) -> Optional[FitnessMember]:
+    rows = (
+        db.query(FitnessMember)
+        .filter(FitnessMember.business_key == BUSINESS_KEY, FitnessMember.phone.isnot(None), FitnessMember.phone != "")
+        .all()
+    )
+    for member in rows:
+        try:
+            if _normalize_phone(member.phone) == phone_e164:
+                return member
+        except HTTPException:
+            continue
+    return None
 
 
 def _public_url(request: Request) -> str:
@@ -149,7 +179,61 @@ def site_data(db: Session = Depends(get_db)):
         "plans": [plan.public_dict() for plan in ORTU_PLANS],
         "sessions": [_session_dict(row, int(counts.get(row.id, 0))) for row in sessions],
         "payments_ready": gocardless.is_configured(),
+        "member_login_enabled": twilio_verify.is_configured(),
     }
+
+
+class MemberLoginStart(BaseModel):
+    phone: str = Field(min_length=7, max_length=30)
+    channel: str = Field(default="whatsapp", pattern="^(whatsapp|sms)$")
+
+
+class MemberLoginVerify(BaseModel):
+    phone: str = Field(min_length=7, max_length=30)
+    code: str = Field(min_length=4, max_length=10)
+
+
+@router.post("/member/login/start", status_code=202)
+def member_login_start(payload: MemberLoginStart, db: Session = Depends(get_db)):
+    if not twilio_verify.is_configured():
+        raise HTTPException(status_code=503, detail="Member login by mobile is not configured yet.")
+    phone = _normalize_phone(payload.phone)
+    if not _member_by_phone(db, phone):
+        raise HTTPException(status_code=404, detail="No membership was found for this mobile number. Use the number you gave when joining, including the country code.")
+    try:
+        twilio_verify.start(phone, payload.channel)
+    except twilio_verify.VerifyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "sent", "channel": payload.channel}
+
+
+@router.post("/member/login/verify")
+def member_login_verify(payload: MemberLoginVerify, db: Session = Depends(get_db)):
+    if not twilio_verify.is_configured():
+        raise HTTPException(status_code=503, detail="Member login by mobile is not configured yet.")
+    phone = _normalize_phone(payload.phone)
+    member = _member_by_phone(db, phone)
+    if not member:
+        raise HTTPException(status_code=404, detail="No membership was found for this mobile number.")
+    try:
+        approved = twilio_verify.check(phone, payload.code)
+    except twilio_verify.VerifyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not approved:
+        raise HTTPException(status_code=401, detail="That code is not right or has expired. Please try again.")
+    memberships = (
+        db.query(FitnessMembership)
+        .filter(FitnessMembership.business_key == BUSINESS_KEY, FitnessMembership.member_id == member.id)
+        .order_by(FitnessMembership.created_at.desc())
+        .all()
+    )
+    membership = next((row for row in memberships if row.status == "active"), None) or (memberships[0] if memberships else None)
+    if not membership:
+        raise HTTPException(status_code=404, detail="This member has no membership records yet.")
+    token = _new_token()
+    membership.public_token_hash = _hash_token(token)
+    db.commit()
+    return {"membership_token": token}
 
 
 @router.post("/memberships/checkout", status_code=201)
