@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import public_site
+from app.routers import agent_api, public_site
 
 app = FastAPI(
     title="ORTU Fitness",
@@ -17,6 +17,7 @@ app = FastAPI(
 )
 
 app.include_router(public_site.router)
+app.include_router(agent_api.router)
 
 # Directory holding the built React frontend (populated in the Docker image).
 STATIC_DIR = Path(os.getenv("ORTU_STATIC_DIR", "/app/static")).resolve()
