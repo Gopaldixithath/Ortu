@@ -22,14 +22,14 @@ function Mark() {
   return <a className="brand" href="#top" aria-label="ORTU Fitness home"><span className="brandMark">O</span><span>ORTU <b>FITNESS</b></span></a>
 }
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, wide, children }) {
   useEffect(() => {
     const close = (event) => event.key === 'Escape' && onClose()
     document.addEventListener('keydown', close)
     return () => document.removeEventListener('keydown', close)
   }, [onClose])
   return <div className="modalBackdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-    <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <section className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <button className="modalClose" onClick={onClose} aria-label="Close">×</button>
       <p className="eyebrow">ORTU FITNESS</p><h2 id="modal-title">{title}</h2>{children}
     </section>
@@ -159,10 +159,162 @@ function MemberModal({ initialToken, onToken, onClose, onChanged }) {
   return <Modal title="My ORTU bookings" onClose={onClose}>{!dashboard ? <div className="form"><label>Membership access code<input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste the code saved after joining" /></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || token.length < 20} onClick={() => load()}>{busy ? 'Loading…' : 'Open my membership'}</button></div> : <div className="memberArea"><div className="memberHeader"><div><p>Welcome back</p><h3>{dashboard.member.first_name}</h3></div><div><span>{dashboard.membership.plan_name}</span><b>{dashboard.membership.remaining_classes == null ? 'Unlimited classes' : `${dashboard.membership.remaining_classes} credits left`}</b></div></div><h4>Upcoming bookings</h4>{dashboard.bookings.length ? dashboard.bookings.map((booking) => <article className="memberBooking" key={booking.booking_id}><div><b>{booking.session.name}</b><span>{formatDate(booking.session.start_at)}</span></div><button disabled={!booking.can_cancel} onClick={() => cancel(booking.booking_id)}>{booking.can_cancel ? 'Cancel booking' : 'Cancellation closed'}</button></article>) : <p className="emptySmall">No classes booked yet. Close this window and choose one from the timetable.</p>}{error && <p className="formError">{error}</p>}</div>}</Modal>
 }
 
+const ADMIN_KEY_STORE = 'ortu_admin_key'
+const MEMBERSHIP_STATUS = {
+  active: ['Active', 'good'],
+  pending_payment: ['Awaiting payment', 'warn'],
+  payment_failed: ['Payment failed', 'bad'],
+  suspended: ['Suspended', 'bad'],
+}
+const shortDate = (value) => new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value))
+const money = (pence) => `£${(pence / 100).toFixed(2)}`
+
 function AdminModal({ onClose, onChanged }) {
-  const [key, setKey] = useState(''); const [error, setError] = useState(''); const [success, setSuccess] = useState('')
-  const submit = async (event) => { event.preventDefault(); setError(''); setSuccess(''); const form = new FormData(event.currentTarget); try { await request('/admin/sessions', { method: 'POST', headers: { 'X-Ortu-Admin-Key': key }, body: JSON.stringify({ name: form.get('name'), coach_name: form.get('coach_name'), location: form.get('location'), description: form.get('description'), start_at: new Date(form.get('start_at')).toISOString(), end_at: new Date(form.get('end_at')).toISOString(), capacity: Number(form.get('capacity')) }) }); setSuccess('Class published to the live timetable.'); event.currentTarget.reset(); onChanged() } catch (e) { setError(e.message) } }
-  return <Modal title="Studio timetable setup" onClose={onClose}><form className="form" onSubmit={submit}><label>Studio admin key<input type="password" required value={key} onChange={(e) => setKey(e.target.value)} /></label><label>Class name<input name="name" required placeholder="Strength & Conditioning" /></label><div className="twoCols"><label>Coach<input name="coach_name" placeholder="Coach name" /></label><label>Capacity<input name="capacity" required type="number" min="1" max="500" defaultValue="12" /></label></div><label>Location<input name="location" placeholder="ORTU Fitness Studio" /></label><div className="twoCols"><label>Starts<input name="start_at" required type="datetime-local" /></label><label>Ends<input name="end_at" required type="datetime-local" /></label></div><label>Description<textarea name="description" rows="3" placeholder="What members can expect" /></label>{error && <p className="formError">{error}</p>}{success && <p className="formSuccess">{success}</p>}<button className="button wide">Publish class</button></form></Modal>
+  const [key, setKey] = useState(() => sessionStorage.getItem(ADMIN_KEY_STORE) || '')
+  const [authed, setAuthed] = useState(false)
+  const [tab, setTab] = useState('classes')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [sessions, setSessions] = useState([])
+  const [members, setMembers] = useState(null)
+
+  const adminRequest = (path, options = {}) => request(path, { ...options, headers: { 'X-Ortu-Admin-Key': key, ...(options.headers || {}) } })
+  const loadSessions = () => adminRequest('/admin/sessions').then(setSessions)
+  const loadMembers = () => adminRequest('/admin/members').then(setMembers)
+
+  const unlock = async (event) => {
+    event.preventDefault(); setBusy(true); setError('')
+    try { await loadSessions(); sessionStorage.setItem(ADMIN_KEY_STORE, key); setAuthed(true) } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  useEffect(() => {
+    if (key) loadSessions().then(() => setAuthed(true)).catch(() => sessionStorage.removeItem(ADMIN_KEY_STORE))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (authed && tab === 'members' && !members) loadMembers().catch((e) => setError(e.message))
+  }, [authed, tab]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!authed) return <Modal title="Studio login" onClose={onClose}>
+    <form className="form" onSubmit={unlock}>
+      <label>Studio admin key<input type="password" required value={key} onChange={(e) => setKey(e.target.value)} /></label>
+      {error && <p className="formError">{error}</p>}
+      <button className="button wide" disabled={busy || !key}>{busy ? 'Checking…' : 'Open studio dashboard'}</button>
+    </form>
+  </Modal>
+
+  return <Modal title="Studio dashboard" onClose={onClose} wide>
+    <div className="adminTabs">
+      <button className={tab === 'classes' ? 'active' : ''} onClick={() => setTab('classes')}>Timetable</button>
+      <button className={tab === 'members' ? 'active' : ''} onClick={() => setTab('members')}>Members</button>
+    </div>
+    {error && <p className="formError">{error}</p>}
+    {tab === 'classes' && <AdminClasses sessions={sessions} adminRequest={adminRequest} refresh={() => { loadSessions().catch((e) => setError(e.message)); onChanged() }} />}
+    {tab === 'members' && <AdminMembers data={members} refresh={() => loadMembers().catch((e) => setError(e.message))} />}
+  </Modal>
+}
+
+function AdminClasses({ sessions, adminRequest, refresh }) {
+  const [showCreate, setShowCreate] = useState(false)
+  const [openId, setOpenId] = useState(null)
+  const [register, setRegister] = useState(null)
+  const [capacity, setCapacity] = useState('')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  const openRegister = async (session) => {
+    if (openId === session.id) { setOpenId(null); setRegister(null); return }
+    setOpenId(session.id); setRegister(null); setCapacity(String(session.capacity)); setError('')
+    try { setRegister(await adminRequest(`/admin/sessions/${session.id}/bookings`)) } catch (e) { setError(e.message) }
+  }
+  const patch = async (sessionId, payload, message) => {
+    setError(''); setSuccess('')
+    try {
+      await adminRequest(`/admin/sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify(payload) })
+      setSuccess(message); refresh()
+      if (openId === sessionId) setRegister(await adminRequest(`/admin/sessions/${sessionId}/bookings`))
+    } catch (e) { setError(e.message) }
+  }
+  return <div>
+    <button className="button small" onClick={() => setShowCreate(!showCreate)}>{showCreate ? 'Hide new class form' : '＋ Publish a new class'}</button>
+    {showCreate && <AdminCreateClass adminRequest={adminRequest} onCreated={() => { setShowCreate(false); setSuccess('Class published to the live timetable.'); refresh() }} />}
+    {error && <p className="formError">{error}</p>}{success && <p className="formSuccess">{success}</p>}
+    <div className="adminList">
+      {sessions.map((session) => {
+        const past = new Date(session.start_at) < new Date()
+        return <div key={session.id}>
+          <div className="adminRow">
+            <div>
+              <b>{session.name}<span className={`statusTag ${session.status === 'cancelled' ? 'bad' : past ? '' : 'good'}`}>{session.status === 'cancelled' ? 'Cancelled' : past ? 'Past' : 'Scheduled'}</span></b>
+              <p className="adminMeta">{formatDate(session.start_at)} · {session.coach_name} · {session.booked}/{session.capacity} booked</p>
+            </div>
+            <div className="adminActions">
+              <button onClick={() => openRegister(session)}>{openId === session.id ? 'Close register' : 'Register'}</button>
+              {!past && (session.status === 'cancelled'
+                ? <button onClick={() => patch(session.id, { status: 'scheduled' }, 'Class restored to the timetable.')}>Restore</button>
+                : <button onClick={() => patch(session.id, { status: 'cancelled' }, 'Class cancelled.')}>Cancel class</button>)}
+            </div>
+          </div>
+          {openId === session.id && <div className="adminPanel">
+            <div className="capacityEdit"><b>Capacity</b><input type="number" min="1" max="500" value={capacity} onChange={(e) => setCapacity(e.target.value)} /><button className="button small" onClick={() => patch(session.id, { capacity: Number(capacity) }, 'Capacity updated.')}>Save</button></div>
+            {!register ? <p className="adminMeta">Loading register…</p> : register.bookings.length ? register.bookings.map((booking) => <div className="registerRow" key={booking.booking_id}>
+              <div><b>{booking.member.first_name} {booking.member.last_name}</b><span className="adminMeta"> · {booking.plan_name}</span>{booking.status !== 'confirmed' && <span className="statusTag bad">Cancelled</span>}</div>
+              <p className="adminMeta">{booking.member.email}{booking.member.phone ? ` · ${booking.member.phone}` : ''} · booked {shortDate(booking.booked_at)}</p>
+            </div>) : <p className="adminMeta">No bookings for this class yet.</p>}
+          </div>}
+        </div>
+      })}
+      {!sessions.length && <p className="emptySmall">No classes yet — publish your first one above.</p>}
+    </div>
+  </div>
+}
+
+function AdminCreateClass({ adminRequest, onCreated }) {
+  const [error, setError] = useState('')
+  const submit = async (event) => {
+    event.preventDefault(); setError('')
+    const form = new FormData(event.currentTarget)
+    try {
+      await adminRequest('/admin/sessions', { method: 'POST', body: JSON.stringify({ name: form.get('name'), coach_name: form.get('coach_name'), location: form.get('location'), description: form.get('description'), start_at: new Date(form.get('start_at')).toISOString(), end_at: new Date(form.get('end_at')).toISOString(), capacity: Number(form.get('capacity')) }) })
+      onCreated()
+    } catch (e) { setError(e.message) }
+  }
+  return <form className="form adminCreate" onSubmit={submit}>
+    <label>Class name<input name="name" required placeholder="Strength & Conditioning" /></label>
+    <div className="twoCols"><label>Coach<input name="coach_name" placeholder="Coach name" /></label><label>Capacity<input name="capacity" required type="number" min="1" max="500" defaultValue="12" /></label></div>
+    <label>Location<input name="location" placeholder="ORTU Fitness Studio" /></label>
+    <div className="twoCols"><label>Starts<input name="start_at" required type="datetime-local" /></label><label>Ends<input name="end_at" required type="datetime-local" /></label></div>
+    <label>Description<textarea name="description" rows="3" placeholder="What members can expect" /></label>
+    {error && <p className="formError">{error}</p>}
+    <button className="button wide">Publish class</button>
+  </form>
+}
+
+function AdminMembers({ data, refresh }) {
+  if (!data) return <p className="adminMeta">Loading members…</p>
+  const base = data.gocardless_dashboard_url
+  return <div>
+    <div className="adminToolbar">
+      <p className="adminMeta">{data.members.length} member{data.members.length === 1 ? '' : 's'} · payment records open in the GoCardless dashboard</p>
+      <button className="button small" onClick={refresh}>Refresh</button>
+    </div>
+    {data.members.length ? data.members.map((member) => <div className="adminMemberCard" key={member.id}>
+      <div><b>{member.first_name} {member.last_name}</b>{member.marketing_opt_in && <span className="statusTag good">Marketing OK</span>}</div>
+      <p className="adminMeta">{member.email}{member.phone ? ` · ${member.phone}` : ''} · joined {shortDate(member.joined_at)} · {member.confirmed_bookings} booking{member.confirmed_bookings === 1 ? '' : 's'}</p>
+      {member.memberships.map((membership) => {
+        const [label, tone] = MEMBERSHIP_STATUS[membership.status] || [membership.status, '']
+        return <div className="membershipLine" key={membership.id}>
+          <span className={`statusTag ${tone}`}>{label}</span>
+          <b>{membership.plan_name}</b>
+          <span className="adminMeta">{money(membership.amount_pence)}{membership.billing_kind === 'recurring' ? '/month' : ''}{membership.remaining_classes != null ? ` · ${membership.remaining_classes} credits left` : ' · unlimited'}{membership.ends_at ? ` · until ${shortDate(membership.ends_at)}` : ''}</span>
+          <span className="gcLinks">
+            {membership.gocardless_mandate_id && <a href={`${base}/mandates/${membership.gocardless_mandate_id}`} target="_blank" rel="noreferrer">Mandate</a>}
+            {membership.gocardless_subscription_id && <a href={`${base}/subscriptions/${membership.gocardless_subscription_id}`} target="_blank" rel="noreferrer">Subscription</a>}
+            {membership.gocardless_payment_id && <a href={`${base}/payments/${membership.gocardless_payment_id}`} target="_blank" rel="noreferrer">Payment</a>}
+          </span>
+        </div>
+      })}
+      {!member.memberships.length && <p className="adminMeta">No membership records.</p>}
+    </div>) : <p className="emptySmall">No members yet. They appear here as soon as someone chooses a plan.</p>}
+  </div>
 }
 
 export default App

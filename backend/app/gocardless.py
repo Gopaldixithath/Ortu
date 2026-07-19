@@ -19,6 +19,11 @@ def is_configured() -> bool:
     return bool(str(os.getenv("GOCARDLESS_ACCESS_TOKEN") or "").strip())
 
 
+def dashboard_base_url() -> str:
+    environment = str(os.getenv("GOCARDLESS_ENVIRONMENT") or "sandbox").strip().lower()
+    return "https://manage.gocardless.com" if environment == "live" else "https://manage-sandbox.gocardless.com"
+
+
 def _request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     token = str(os.getenv("GOCARDLESS_ACCESS_TOKEN") or "").strip()
     if not token:

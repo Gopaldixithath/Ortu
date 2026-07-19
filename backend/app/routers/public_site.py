@@ -400,11 +400,23 @@ def cancel_booking(booking_id: int, payload: BookingCancel, db: Session = Depend
     return {"message": "Your booking has been cancelled and the class credit restored."}
 
 
+def _confirmed_counts(db: Session, session_ids: list[int]) -> dict[int, int]:
+    if not session_ids:
+        return {}
+    return dict(
+        db.query(FitnessClassBooking.session_id, func.count(FitnessClassBooking.id))
+        .filter(FitnessClassBooking.session_id.in_(session_ids), FitnessClassBooking.status == "confirmed")
+        .group_by(FitnessClassBooking.session_id)
+        .all()
+    )
+
+
 @router.get("/admin/sessions")
 def admin_sessions(x_ortu_admin_key: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
     _require_admin(x_ortu_admin_key)
     rows = db.query(FitnessClassSession).filter(FitnessClassSession.business_key == BUSINESS_KEY).order_by(FitnessClassSession.start_at.desc()).limit(100).all()
-    return [_session_dict(row, 0) for row in rows]
+    counts = _confirmed_counts(db, [int(row.id) for row in rows])
+    return [_session_dict(row, int(counts.get(row.id, 0))) for row in rows]
 
 
 @router.post("/admin/sessions", status_code=201)
@@ -433,7 +445,100 @@ def admin_update_session(session_id: int, payload: SessionUpdate, x_ortu_admin_k
     if payload.status is not None:
         row.status = payload.status
     db.commit()
-    return _session_dict(row, 0)
+    counts = _confirmed_counts(db, [int(row.id)])
+    return _session_dict(row, int(counts.get(row.id, 0)))
+
+
+@router.get("/admin/sessions/{session_id}/bookings")
+def admin_session_bookings(session_id: int, x_ortu_admin_key: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
+    _require_admin(x_ortu_admin_key)
+    session_row = db.query(FitnessClassSession).filter(FitnessClassSession.id == session_id, FitnessClassSession.business_key == BUSINESS_KEY).first()
+    if not session_row:
+        raise HTTPException(status_code=404, detail="Class session not found.")
+    rows = (
+        db.query(FitnessClassBooking, FitnessMember, FitnessMembership)
+        .join(FitnessMember, FitnessMember.id == FitnessClassBooking.member_id)
+        .join(FitnessMembership, FitnessMembership.id == FitnessClassBooking.membership_id)
+        .filter(FitnessClassBooking.session_id == session_row.id)
+        .order_by(FitnessClassBooking.booked_at.asc())
+        .all()
+    )
+    confirmed = sum(1 for booking, _, _ in rows if booking.status == "confirmed")
+    return {
+        "session": _session_dict(session_row, confirmed),
+        "bookings": [
+            {
+                "booking_id": int(booking.id),
+                "status": booking.status,
+                "booked_at": booking.booked_at,
+                "cancelled_at": booking.cancelled_at,
+                "plan_name": membership.plan_name,
+                "member": {
+                    "id": int(member.id),
+                    "first_name": member.first_name,
+                    "last_name": member.last_name,
+                    "email": member.email,
+                    "phone": member.phone,
+                },
+            }
+            for booking, member, membership in rows
+        ],
+    }
+
+
+@router.get("/admin/members")
+def admin_members(x_ortu_admin_key: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
+    _require_admin(x_ortu_admin_key)
+    members = db.query(FitnessMember).filter(FitnessMember.business_key == BUSINESS_KEY).order_by(FitnessMember.created_at.desc()).limit(500).all()
+    member_ids = [int(member.id) for member in members]
+    memberships_by_member: dict[int, list[FitnessMembership]] = {}
+    booking_counts: dict[int, int] = {}
+    if member_ids:
+        for row in (
+            db.query(FitnessMembership)
+            .filter(FitnessMembership.member_id.in_(member_ids))
+            .order_by(FitnessMembership.created_at.desc())
+            .all()
+        ):
+            memberships_by_member.setdefault(int(row.member_id), []).append(row)
+        booking_counts = dict(
+            db.query(FitnessClassBooking.member_id, func.count(FitnessClassBooking.id))
+            .filter(FitnessClassBooking.member_id.in_(member_ids), FitnessClassBooking.status == "confirmed")
+            .group_by(FitnessClassBooking.member_id)
+            .all()
+        )
+    return {
+        "gocardless_dashboard_url": gocardless.dashboard_base_url(),
+        "members": [
+            {
+                "id": int(member.id),
+                "first_name": member.first_name,
+                "last_name": member.last_name,
+                "email": member.email,
+                "phone": member.phone,
+                "marketing_opt_in": bool(member.marketing_opt_in),
+                "joined_at": member.created_at,
+                "confirmed_bookings": int(booking_counts.get(int(member.id), 0)),
+                "memberships": [
+                    {
+                        "id": int(row.id),
+                        "plan_name": row.plan_name,
+                        "billing_kind": row.billing_kind,
+                        "amount_pence": int(row.amount_pence),
+                        "status": row.status,
+                        "remaining_classes": row.remaining_classes,
+                        "starts_at": row.starts_at,
+                        "ends_at": row.ends_at,
+                        "gocardless_mandate_id": row.gocardless_mandate_id,
+                        "gocardless_subscription_id": row.gocardless_subscription_id,
+                        "gocardless_payment_id": row.gocardless_payment_id,
+                    }
+                    for row in memberships_by_member.get(int(member.id), [])
+                ],
+            }
+            for member in members
+        ],
+    }
 
 
 @router.post("/gocardless/webhook", status_code=204)
