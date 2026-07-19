@@ -374,6 +374,20 @@ def member_signup(payload: MemberSignup, db: Session = Depends(get_db)):
     )
     db.add(member)
     db.commit()
+    if email_login.is_configured():
+        try:
+            email_login.send(
+                member.email,
+                "We received your ORTU Fitness member record request",
+                f"Hi {member.first_name},\n\n"
+                "Thanks for your interest in joining ORTU Fitness — your member record request has been "
+                "received and is with the club for review.\n\n"
+                "You will get another email as soon as the club accepts your sign-up. After that you can "
+                "log in with your email address and password, choose a membership plan and book classes.\n\n"
+                "ORTU Fitness",
+            )
+        except email_login.EmailError:
+            pass
     return {"status": "pending", "detail": "Your member record request has been sent to the club."}
 
 
