@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import email_login, gocardless, twilio_verify
+from app import email_login, gocardless, passwords, twilio_verify
 from app.booking_rules import (
     FitnessRuleError,
     ensure_booking_window,
@@ -181,7 +181,7 @@ def site_data(db: Session = Depends(get_db)):
         "sessions": [_session_dict(row, int(counts.get(row.id, 0))) for row in sessions],
         "payments_ready": gocardless.is_configured(),
         "member_login_enabled": email_login.is_configured() or twilio_verify.is_configured(),
-        "member_login_channels": {"email": email_login.is_configured(), "phone": twilio_verify.is_configured()},
+        "member_login_channels": {"password": True, "email": email_login.is_configured(), "phone": twilio_verify.is_configured()},
     }
 
 
@@ -287,6 +287,120 @@ def member_email_login_verify(payload: EmailLoginVerify, db: Session = Depends(g
     return {"membership_token": _issue_membership_token(db, member)}
 
 
+class MemberSignup(BaseModel):
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
+    date_of_birth: date
+    email: EmailStr
+    phone: Optional[str] = Field(default=None, max_length=60)
+    phone_other: Optional[str] = Field(default=None, max_length=60)
+    address_house: Optional[str] = Field(default=None, max_length=120)
+    address_line1: Optional[str] = Field(default=None, max_length=255)
+    address_line2: Optional[str] = Field(default=None, max_length=255)
+    town: Optional[str] = Field(default=None, max_length=120)
+    county: Optional[str] = Field(default=None, max_length=120)
+    postcode: Optional[str] = Field(default=None, max_length=20)
+    kin_first_name: str = Field(min_length=1, max_length=120)
+    kin_last_name: str = Field(min_length=1, max_length=120)
+    kin_mobile: str = Field(min_length=7, max_length=60)
+    kin_email: EmailStr
+    kin_relationship: Optional[str] = Field(default=None, max_length=120)
+    kin_is_primary_contact: bool = False
+    contact2_name: Optional[str] = Field(default=None, max_length=180)
+    contact2_mobile: Optional[str] = Field(default=None, max_length=60)
+    contact2_email: Optional[str] = Field(default=None, max_length=320)
+    contact2_relationship: Optional[str] = Field(default=None, max_length=120)
+    health_notes: Optional[str] = Field(default=None, max_length=4000)
+    no_health_issues: bool = False
+    password: str = Field(min_length=8, max_length=128)
+    agree_terms: bool
+    dp_legal: bool
+    dp_services: bool
+    dp_marketing: bool = False
+
+
+class MemberPasswordLogin(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/member/signup", status_code=201)
+def member_signup(payload: MemberSignup, db: Session = Depends(get_db)):
+    if not payload.agree_terms:
+        raise HTTPException(status_code=422, detail="Please agree to the terms and conditions.")
+    if not (payload.dp_legal and payload.dp_services):
+        raise HTTPException(status_code=422, detail="The first two data protection options are required to create your member record.")
+    if not payload.no_health_issues and not (payload.health_notes or "").strip():
+        raise HTTPException(status_code=422, detail="Add your health notes, or tick that you have no health issues.")
+    if payload.date_of_birth >= _now().date():
+        raise HTTPException(status_code=422, detail="Please check the date of birth.")
+    email = str(payload.email).strip().lower()
+    if _member_by_email(db, email):
+        raise HTTPException(status_code=409, detail="A member record with this email already exists. Try logging in instead, or contact the studio.")
+    now = _now()
+    member = FitnessMember(
+        business_key=BUSINESS_KEY,
+        first_name=payload.first_name.strip(),
+        last_name=payload.last_name.strip(),
+        email=email,
+        phone=(payload.phone or "").strip() or None,
+        access_token_hash=_hash_token(_new_token()),
+        marketing_opt_in=bool(payload.dp_marketing),
+        password_hash=passwords.hash_password(payload.password),
+        approval_status="pending",
+        date_of_birth=payload.date_of_birth,
+        phone_other=(payload.phone_other or "").strip() or None,
+        address_house=(payload.address_house or "").strip() or None,
+        address_line1=(payload.address_line1 or "").strip() or None,
+        address_line2=(payload.address_line2 or "").strip() or None,
+        town=(payload.town or "").strip() or None,
+        county=(payload.county or "").strip() or None,
+        postcode=(payload.postcode or "").strip() or None,
+        kin_first_name=payload.kin_first_name.strip(),
+        kin_last_name=payload.kin_last_name.strip(),
+        kin_mobile=payload.kin_mobile.strip(),
+        kin_email=str(payload.kin_email).strip().lower(),
+        kin_relationship=(payload.kin_relationship or "").strip() or None,
+        kin_is_primary_contact=bool(payload.kin_is_primary_contact),
+        contact2_name=(payload.contact2_name or "").strip() or None,
+        contact2_mobile=(payload.contact2_mobile or "").strip() or None,
+        contact2_email=(payload.contact2_email or "").strip() or None,
+        contact2_relationship=(payload.contact2_relationship or "").strip() or None,
+        health_notes=(payload.health_notes or "").strip() or None,
+        no_health_issues=bool(payload.no_health_issues),
+        terms_agreed_at=now,
+        dp_legal=True,
+        dp_services=True,
+    )
+    db.add(member)
+    db.commit()
+    return {"status": "pending", "detail": "Your member record request has been sent to the club."}
+
+
+@router.post("/member/login/password")
+def member_password_login(payload: MemberPasswordLogin, db: Session = Depends(get_db)):
+    email = str(payload.email).strip().lower()
+    member = _member_by_email(db, email)
+    if not member or not member.password_hash:
+        raise HTTPException(status_code=401, detail="Email or password is not right. Members who joined before passwords existed can use the emailed sign-in code instead.")
+    if not passwords.verify_password(payload.password, member.password_hash):
+        raise HTTPException(status_code=401, detail="Email or password is not right.")
+    if member.approval_status == "pending":
+        raise HTTPException(status_code=403, detail="The club has not accepted your sign-up yet. You will receive an email when your member record is approved.")
+    if member.approval_status == "declined":
+        raise HTTPException(status_code=403, detail="This member record request was not accepted. Please contact the studio.")
+    membership_token = None
+    try:
+        membership_token = _issue_membership_token(db, member)
+    except HTTPException:
+        pass
+    return {
+        "membership_token": membership_token,
+        "needs_plan": membership_token is None,
+        "member": {"first_name": member.first_name, "last_name": member.last_name, "email": member.email, "phone": member.phone},
+    }
+
+
 class MemberLoginStart(BaseModel):
     phone: str = Field(min_length=7, max_length=30)
     channel: str = Field(default="whatsapp", pattern="^(whatsapp|sms)$")
@@ -339,25 +453,18 @@ def start_membership_checkout(payload: MembershipCheckout, request: Request, db:
         .filter(FitnessMember.business_key == BUSINESS_KEY, func.lower(FitnessMember.email) == email)
         .first()
     )
-    member_access_token = _new_token()
     if member is None:
-        member = FitnessMember(
-            business_key=BUSINESS_KEY,
-            first_name=payload.first_name.strip(),
-            last_name=payload.last_name.strip(),
-            email=email,
-            phone=(payload.phone or "").strip() or None,
-            access_token_hash=_hash_token(member_access_token),
-            marketing_opt_in=payload.marketing_opt_in,
-        )
-        db.add(member)
-        db.flush()
-    else:
-        member.first_name = payload.first_name.strip()
-        member.last_name = payload.last_name.strip()
-        member.phone = (payload.phone or "").strip() or member.phone
-        member.marketing_opt_in = bool(payload.marketing_opt_in)
-        member.access_token_hash = _hash_token(member_access_token)
+        raise HTTPException(status_code=403, detail="Please become a member first — send a member record request and wait for the club to accept it.")
+    if member.approval_status == "pending":
+        raise HTTPException(status_code=403, detail="Your member record request is still awaiting the club's approval. You will receive an email once it is accepted.")
+    if member.approval_status == "declined":
+        raise HTTPException(status_code=403, detail="This member record was not accepted. Please contact the studio.")
+    member_access_token = _new_token()
+    member.first_name = payload.first_name.strip()
+    member.last_name = payload.last_name.strip()
+    member.phone = (payload.phone or "").strip() or member.phone
+    member.marketing_opt_in = bool(payload.marketing_opt_in)
+    member.access_token_hash = _hash_token(member_access_token)
 
     membership_token = _new_token()
     membership = FitnessMembership(
@@ -465,7 +572,7 @@ def member_dashboard(membership_token: str = Query(..., min_length=20), db: Sess
         .all()
     )
     return {
-        "member": {"first_name": member.first_name, "last_name": member.last_name, "email": member.email},
+        "member": {"first_name": member.first_name, "last_name": member.last_name, "email": member.email, "phone": member.phone},
         "membership": {
             "plan_name": membership.plan_name,
             "status": membership.status,
@@ -695,6 +802,27 @@ def admin_members(x_ortu_admin_key: Optional[str] = Header(default=None), db: Se
                 "marketing_opt_in": bool(member.marketing_opt_in),
                 "joined_at": member.created_at,
                 "confirmed_bookings": int(booking_counts.get(int(member.id), 0)),
+                "approval_status": member.approval_status,
+                "approved_at": member.approved_at,
+                "date_of_birth": member.date_of_birth.isoformat() if member.date_of_birth else None,
+                "phone_other": member.phone_other,
+                "address": ", ".join(part for part in [member.address_house, member.address_line1, member.address_line2, member.town, member.county, member.postcode] if part) or None,
+                "kin": {
+                    "name": " ".join(part for part in [member.kin_first_name, member.kin_last_name] if part) or None,
+                    "mobile": member.kin_mobile,
+                    "email": member.kin_email,
+                    "relationship": member.kin_relationship,
+                    "is_primary_contact": bool(member.kin_is_primary_contact),
+                },
+                "contact2": {
+                    "name": member.contact2_name,
+                    "mobile": member.contact2_mobile,
+                    "email": member.contact2_email,
+                    "relationship": member.contact2_relationship,
+                },
+                "health_notes": member.health_notes,
+                "no_health_issues": bool(member.no_health_issues),
+                "has_password": bool(member.password_hash),
                 "memberships": [
                     {
                         "id": int(row.id),
@@ -715,6 +843,52 @@ def admin_members(x_ortu_admin_key: Optional[str] = Header(default=None), db: Se
             for member in members
         ],
     }
+
+
+class MemberApproval(BaseModel):
+    action: str = Field(pattern="^(approve|decline)$")
+
+
+@router.post("/admin/members/{member_id}/approval")
+def admin_member_approval(member_id: int, payload: MemberApproval, request: Request, x_ortu_admin_key: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
+    _require_admin(x_ortu_admin_key)
+    member = db.query(FitnessMember).filter(FitnessMember.id == member_id, FitnessMember.business_key == BUSINESS_KEY).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if payload.action == "approve":
+        member.approval_status = "approved"
+        member.approved_at = _now()
+    else:
+        member.approval_status = "declined"
+        member.approved_at = None
+    db.commit()
+    email_result = "not_configured"
+    if email_login.is_configured():
+        site_url = _public_url(request)
+        try:
+            if payload.action == "approve":
+                email_login.send(
+                    member.email,
+                    "Your ORTU Fitness membership has been accepted",
+                    f"Hi {member.first_name},\n\n"
+                    "Great news — the club has accepted your member record request.\n\n"
+                    f"You can now log in with your email address and password at {site_url} "
+                    "(My bookings), choose your membership plan and start booking classes.\n\n"
+                    "See you in the studio!\n\nORTU Fitness",
+                )
+            else:
+                email_login.send(
+                    member.email,
+                    "Your ORTU Fitness member record request",
+                    f"Hi {member.first_name},\n\n"
+                    "Thank you for your interest in ORTU Fitness. Unfortunately the club has not been "
+                    "able to accept your member record request at this time. Please contact the studio "
+                    "if you would like to discuss it.\n\nORTU Fitness",
+                )
+            email_result = "sent"
+        except email_login.EmailError:
+            email_result = "failed"
+    return {"approval_status": member.approval_status, "notification_email": email_result}
 
 
 @router.post("/gocardless/webhook", status_code=204)

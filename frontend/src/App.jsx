@@ -44,7 +44,18 @@ function App() {
   const [bookingSession, setBookingSession] = useState(null)
   const [showMember, setShowMember] = useState(false)
   const [showAdmin, setShowAdmin] = useState(false)
+  const [showSignup, setShowSignup] = useState(false)
   const [membershipToken, setMembershipToken] = useState(() => localStorage.getItem(MEMBERSHIP_KEY) || '')
+  const [memberProfile, setMemberProfile] = useState(() => { try { return JSON.parse(localStorage.getItem('ortu_member_profile') || 'null') } catch { return null } })
+  const saveProfile = (member) => { if (member) { setMemberProfile(member); localStorage.setItem('ortu_member_profile', JSON.stringify(member)) } }
+  const chooseJoin = (plan) => {
+    if (!memberProfile && !membershipToken) {
+      setNotice('ORTU approves new members before plans can be purchased — please send a member record request first.')
+      setShowSignup(true)
+      return
+    }
+    setJoinPlan(plan)
+  }
 
   const loadSite = () => request('/site').then(setSite).catch((e) => setNotice(e.message)).finally(() => setLoading(false))
   useEffect(loadSite, [])
@@ -71,7 +82,7 @@ function App() {
     <header className="header">
       <Mark />
       <nav aria-label="Main navigation"><a href="#classes">Classes</a><a href="#memberships">Memberships</a><a href="#about">Why ORTU</a></nav>
-      <div className="headerActions"><button className="textButton" onClick={() => setShowMember(true)}>My bookings</button><a className="button small" href="#classes">Book a class</a></div>
+      <div className="headerActions"><button className="textButton" onClick={() => setShowSignup(true)}>Become a member</button><button className="textButton" onClick={() => setShowMember(true)}>My bookings</button><a className="button small" href="#classes">Book a class</a></div>
     </header>
 
     {notice && <div className="notice" role="status"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss">×</button></div>}
@@ -109,8 +120,9 @@ function App() {
         <div className="planGrid">{site.plans.map((plan) => <article className={`planCard ${plan.featured ? 'featured' : ''}`} key={plan.slug}>
           {plan.featured && <span className="popular">MOST POPULAR</span>}<p className="planType">{plan.billing_kind === 'recurring' ? 'MONTHLY MEMBERSHIP' : 'FLEXIBLE PASS'}</p><h3>{plan.name}</h3><p className="planDesc">{plan.description}</p><div className="price"><b>{plan.price}</b><span>{plan.billing_kind === 'recurring' ? '/ month' : 'one-off'}</span></div>
           <ul><li>Book from the live timetable</li><li>Manage bookings online</li><li>Secure GoCardless payment</li></ul>
-          <button className={plan.featured ? 'button' : 'button outline'} onClick={() => setJoinPlan(plan)}>Choose plan</button>
+          <button className={plan.featured ? 'button' : 'button outline'} onClick={() => chooseJoin(plan)}>Choose plan</button>
         </article>)}</div>
+        <div className="joinFirst">New to ORTU? <button onClick={() => setShowSignup(true)}>Send a member record request</button> — the club approves every new member before a plan can be purchased.</div>
         {!site.payments_ready && <div className="setupBanner"><b>Payments are in setup mode.</b> Add the GoCardless environment settings before accepting live memberships.</div>}
       </section>
 
@@ -122,16 +134,17 @@ function App() {
       <section className="cta"><p className="eyebrow light">READY WHEN YOU ARE</p><h2>Your strongest chapter<br />can start today.</h2><a className="button" href="#memberships">Choose your membership <span>↗</span></a></section>
     </main>
 
-    <footer><div><Mark /><p>Small-group health and fitness with room for everyone to progress.</p></div><div><b>EXPLORE</b><a href="#classes">Classes</a><a href="#memberships">Memberships</a><a href="#about">Why ORTU</a></div><div><b>MEMBERS</b><button onClick={() => setShowMember(true)}>My bookings</button><button onClick={() => setShowAdmin(true)}>Studio login</button></div><div><b>PAYMENTS</b><p>Securely processed by GoCardless</p><p>Cancellation cutoff: 1 hour</p></div></footer>
+    <footer><div><Mark /><p>Small-group health and fitness with room for everyone to progress.</p></div><div><b>EXPLORE</b><a href="#classes">Classes</a><a href="#memberships">Memberships</a><a href="#about">Why ORTU</a></div><div><b>MEMBERS</b><button onClick={() => setShowSignup(true)}>Become a member</button><button onClick={() => setShowMember(true)}>My bookings</button><button onClick={() => setShowAdmin(true)}>Studio login</button></div><div><b>PAYMENTS</b><p>Securely processed by GoCardless</p><p>Cancellation cutoff: 1 hour</p></div></footer>
 
-    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} phoneForLogin={!!site.member_login_channels?.phone} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
+    {showSignup && <SignupModal onClose={() => setShowSignup(false)} />}
+    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} phoneForLogin={!!site.member_login_channels?.phone} profile={memberProfile} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
     {bookingSession && <BookingModal session={bookingSession} membershipToken={membershipToken} onClose={() => setBookingSession(null)} onBooked={() => { setBookingSession(null); loadSite(); setNotice('Class booked — we look forward to seeing you.'); setShowMember(true) }} />}
-    {showMember && <MemberModal initialToken={membershipToken} channels={site.member_login_channels || {}} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
+    {showMember && <MemberModal initialToken={membershipToken} channels={site.member_login_channels || {}} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onProfile={saveProfile} onNeedsPlan={() => { setShowMember(false); setNotice("You're approved — choose your membership plan below to start booking classes."); document.getElementById('memberships')?.scrollIntoView({ behavior: 'smooth' }) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
     {showAdmin && <AdminModal onClose={() => setShowAdmin(false)} onChanged={loadSite} />}
   </div>
 }
 
-function JoinModal({ plan, paymentsReady, phoneForLogin, onClose, setNotice }) {
+function JoinModal({ plan, paymentsReady, phoneForLogin, profile, onClose, setNotice }) {
   const [busy, setBusy] = useState(false); const [error, setError] = useState('')
   const submit = async (event) => {
     event.preventDefault(); setBusy(true); setError('')
@@ -142,7 +155,7 @@ function JoinModal({ plan, paymentsReady, phoneForLogin, onClose, setNotice }) {
       window.location.assign(data.checkout_url)
     } catch (e) { setError(e.message); setBusy(false) }
   }
-  return <Modal title={`Join with ${plan.name}`} onClose={onClose}><div className="checkoutSummary"><span>{plan.description}</span><b>{plan.price}{plan.billing_kind === 'recurring' ? ' monthly' : ''}</b></div><form className="form" onSubmit={submit}><div className="twoCols"><label>First name<input required name="first_name" autoComplete="given-name" /></label><label>Last name<input required name="last_name" autoComplete="family-name" /></label></div><label>Email address<input required type="email" name="email" autoComplete="email" /></label><label>Mobile number <small>{phoneForLogin ? 'with country code — you log in to your bookings with it' : 'optional'}</small><input name="phone" type="tel" autoComplete="tel" required={phoneForLogin} placeholder="+44 7700 900123" /></label><label className="check"><input type="checkbox" name="marketing_opt_in" /><span>Send me useful ORTU updates and offers.</span></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || !paymentsReady}>{busy ? 'Opening secure payment…' : paymentsReady ? 'Continue to GoCardless' : 'Payments not yet connected'}</button><p className="fineprint">Your bank details are entered on GoCardless’s secure hosted payment page. ORTU does not store them.</p></form></Modal>
+  return <Modal title={`Join with ${plan.name}`} onClose={onClose}><div className="checkoutSummary"><span>{plan.description}</span><b>{plan.price}{plan.billing_kind === 'recurring' ? ' monthly' : ''}</b></div><form className="form" onSubmit={submit}><div className="twoCols"><label>First name<input required name="first_name" defaultValue={profile?.first_name} autoComplete="given-name" /></label><label>Last name<input required name="last_name" defaultValue={profile?.last_name} autoComplete="family-name" /></label></div><label>Email address <small>the one on your member record</small><input required type="email" name="email" defaultValue={profile?.email} autoComplete="email" /></label><label>Mobile number <small>{phoneForLogin ? 'with country code — you log in to your bookings with it' : 'optional'}</small><input name="phone" type="tel" autoComplete="tel" required={phoneForLogin} defaultValue={profile?.phone || ''} placeholder="+44 7700 900123" /></label><label className="check"><input type="checkbox" name="marketing_opt_in" /><span>Send me useful ORTU updates and offers.</span></label>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy || !paymentsReady}>{busy ? 'Opening secure payment…' : paymentsReady ? 'Continue to GoCardless' : 'Payments not yet connected'}</button><p className="fineprint">Your bank details are entered on GoCardless’s secure hosted payment page. ORTU does not store them.</p></form></Modal>
 }
 
 function BookingModal({ session, membershipToken, onClose, onBooked }) {
@@ -151,12 +164,21 @@ function BookingModal({ session, membershipToken, onClose, onBooked }) {
   return <Modal title="Confirm your class" onClose={onClose}><div className="bookingConfirm"><span className="pill">{session.coach_name}</span><h3>{session.name}</h3><p>{formatDate(session.start_at)}</p><p>{session.location}</p><div className="bookingRule"><b>{session.remaining} spaces currently available</b><span>Bookings are confirmed live and cannot exceed the class capacity.</span></div>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy} onClick={confirm}>{busy ? 'Securing your space…' : 'Confirm booking'}</button></div></Modal>
 }
 
-function MemberModal({ initialToken, channels = {}, onToken, onClose, onChanged }) {
+function MemberModal({ initialToken, channels = {}, onToken, onProfile, onNeedsPlan, onClose, onChanged }) {
   const [token, setToken] = useState(initialToken); const [dashboard, setDashboard] = useState(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
-  const [mode, setMode] = useState(channels.email ? 'email' : channels.phone ? 'phone' : 'code')
-  const [email, setEmail] = useState(''); const [phone, setPhone] = useState(''); const [channel, setChannel] = useState('whatsapp')
+  const [mode, setMode] = useState(channels.password ? 'password' : channels.email ? 'email' : channels.phone ? 'phone' : 'code')
+  const [email, setEmail] = useState(''); const [phone, setPhone] = useState(''); const [channel, setChannel] = useState('whatsapp'); const [password, setPassword] = useState('')
   const [sent, setSent] = useState(false); const [otp, setOtp] = useState('')
-  const load = async (value = token) => { setBusy(true); setError(''); try { const data = await request(`/member?membership_token=${encodeURIComponent(value)}`); setDashboard(data); onToken(value) } catch (e) { setError(e.message) } finally { setBusy(false) } }
+  const load = async (value = token) => { setBusy(true); setError(''); try { const data = await request(`/member?membership_token=${encodeURIComponent(value)}`); setDashboard(data); onToken(value); onProfile?.(data.member) } catch (e) { setError(e.message) } finally { setBusy(false) } }
+  const passwordLogin = async (event) => {
+    event.preventDefault(); setBusy(true); setError('')
+    try {
+      const data = await request('/member/login/password', { method: 'POST', body: JSON.stringify({ email, password }) })
+      onProfile?.(data.member)
+      if (data.needs_plan) { onNeedsPlan?.(); return }
+      setToken(data.membership_token); await load(data.membership_token)
+    } catch (e) { setError(e.message); setBusy(false) }
+  }
   useEffect(() => { if (initialToken) load(initialToken) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const switchMode = (next) => { setMode(next); setSent(false); setOtp(''); setError('') }
   const sendCode = async () => {
@@ -178,7 +200,15 @@ function MemberModal({ initialToken, channels = {}, onToken, onClose, onChanged 
   }
   const cancel = async (bookingId) => { if (!window.confirm('Cancel this class? Your credit will be restored.')) return; try { await request(`/bookings/${bookingId}/cancel`, { method: 'POST', body: JSON.stringify({ membership_token: token }) }); await load(); onChanged() } catch (e) { setError(e.message) } }
   return <Modal title="My ORTU bookings" onClose={onClose}>{!dashboard ? <div className="form">
-    {mode !== 'code' ? <>
+    {mode === 'password' ? <form className="form" onSubmit={passwordLogin}>
+      <label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" required /></label>
+      <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required /></label>
+      {error && <p className="formError">{error}</p>}
+      <button className="button wide" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
+      {channels.email && <button type="button" className="linkButton" onClick={() => switchMode('email')}>Forgotten your password? Email me a sign-in code</button>}
+      {channels.phone && <button type="button" className="linkButton" onClick={() => switchMode('phone')}>Log in with my mobile number instead</button>}
+      <button type="button" className="linkButton" onClick={() => switchMode('code')}>Have a membership access code instead?</button>
+    </form> : mode !== 'code' ? <>
       {mode === 'email'
         ? <label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" disabled={sent} /></label>
         : <label>Mobile number<input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900123" autoComplete="tel" disabled={sent} /></label>}
@@ -192,6 +222,7 @@ function MemberModal({ initialToken, channels = {}, onToken, onClose, onChanged 
         <button className="button wide" disabled={busy || otp.trim().length < 4} onClick={verifyCode}>{busy ? 'Checking…' : 'Open my bookings'}</button>
         <button type="button" className="linkButton" onClick={() => { setSent(false); setOtp(''); setError('') }}>Change details or resend the code</button>
       </>}
+      {channels.password && <button type="button" className="linkButton" onClick={() => switchMode('password')}>Log in with my password instead</button>}
       {mode === 'email' && channels.phone && <button type="button" className="linkButton" onClick={() => switchMode('phone')}>Log in with my mobile number instead</button>}
       {mode === 'phone' && channels.email && <button type="button" className="linkButton" onClick={() => switchMode('email')}>Log in with my email instead</button>}
       <button type="button" className="linkButton" onClick={() => switchMode('code')}>Have a membership access code instead?</button>
@@ -199,9 +230,81 @@ function MemberModal({ initialToken, channels = {}, onToken, onClose, onChanged 
       <label>Membership access code<input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste the code saved after joining" /></label>
       {error && <p className="formError">{error}</p>}
       <button className="button wide" disabled={busy || token.length < 20} onClick={() => load()}>{busy ? 'Loading…' : 'Open my membership'}</button>
+      {channels.password && <button type="button" className="linkButton" onClick={() => switchMode('password')}>Log in with my password instead</button>}
       {(channels.email || channels.phone) && <button type="button" className="linkButton" onClick={() => switchMode(channels.email ? 'email' : 'phone')}>Log in with a one-time code instead</button>}
     </>}
   </div> : <div className="memberArea"><div className="memberHeader"><div><p>Welcome back</p><h3>{dashboard.member.first_name}</h3></div><div><span>{dashboard.membership.plan_name}</span><b>{dashboard.membership.remaining_classes == null ? 'Unlimited classes' : `${dashboard.membership.remaining_classes} credits left`}</b></div></div><h4>Upcoming bookings</h4>{dashboard.bookings.length ? dashboard.bookings.map((booking) => <article className="memberBooking" key={booking.booking_id}><div><b>{booking.session.name}</b><span>{formatDate(booking.session.start_at)}</span></div><button disabled={!booking.can_cancel} onClick={() => cancel(booking.booking_id)}>{booking.can_cancel ? 'Cancel booking' : 'Cancellation closed'}</button></article>) : <p className="emptySmall">No classes booked yet. Close this window and choose one from the timetable.</p>}{error && <p className="formError">{error}</p>}</div>}</Modal>
+}
+
+function SignupModal({ onClose }) {
+  const [step, setStep] = useState(1)
+  const [basic, setBasic] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  const stepOne = (event) => {
+    event.preventDefault()
+    setBasic(Object.fromEntries(new FormData(event.currentTarget).entries()))
+    setStep(2); setError('')
+  }
+  const submit = async (event) => {
+    event.preventDefault(); setError('')
+    const form = new FormData(event.currentTarget)
+    if (form.get('password') !== form.get('confirm_password')) { setError('The two passwords do not match.'); return }
+    setBusy(true)
+    try {
+      await request('/member/signup', { method: 'POST', body: JSON.stringify({
+        first_name: basic.first_name, last_name: basic.last_name, date_of_birth: basic.date_of_birth,
+        email: basic.email, phone: basic.phone || null, phone_other: basic.phone_other || null,
+        address_house: basic.address_house || null, address_line1: basic.address_line1 || null, address_line2: basic.address_line2 || null,
+        town: basic.town || null, county: basic.county || null, postcode: basic.postcode || null,
+        kin_first_name: basic.kin_first_name, kin_last_name: basic.kin_last_name, kin_mobile: basic.kin_mobile,
+        kin_email: basic.kin_email, kin_relationship: basic.kin_relationship || null, kin_is_primary_contact: basic.kin_is_primary_contact === 'on',
+        contact2_name: basic.contact2_name || null, contact2_mobile: basic.contact2_mobile || null, contact2_email: basic.contact2_email || null, contact2_relationship: basic.contact2_relationship || null,
+        health_notes: basic.health_notes || null, no_health_issues: basic.no_health_issues === 'on',
+        password: form.get('password'), agree_terms: true, dp_legal: true, dp_services: true, dp_marketing: !!form.get('dp_marketing'),
+      }) })
+      setDone(true)
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  if (done) return <Modal title="Request sent" onClose={onClose}><div className="form"><p>Your member record request has been sent to ORTU Fitness.</p><p className="adminMeta">The club reviews every request. You will receive an email as soon as you are accepted — then you can log in with your password, choose a membership plan and book classes.</p><button className="button wide" onClick={onClose}>Done</button></div></Modal>
+  return <Modal title="Become a member" onClose={onClose} wide>
+    <div className="stepDots"><span className={step === 1 ? 'active' : ''}>1</span><i /><span className={step === 2 ? 'active' : ''}>2</span></div>
+    <p className="adminMeta stepIntro">{step === 1 ? 'Basic information — your member record will be created on the club system.' : 'Membership options — secure your account and confirm how ORTU may use your details.'}</p>
+    {step === 1 ? <form className="form" onSubmit={stepOne}>
+      <h4 className="formSection">Member information</h4>
+      <div className="twoCols"><label>First name *<input name="first_name" required defaultValue={basic?.first_name} autoComplete="given-name" /></label><label>Last name *<input name="last_name" required defaultValue={basic?.last_name} autoComplete="family-name" /></label></div>
+      <div className="twoCols"><label>Date of birth *<input name="date_of_birth" type="date" required defaultValue={basic?.date_of_birth} /></label><label>Email address *<input name="email" type="email" required defaultValue={basic?.email} autoComplete="email" /></label></div>
+      <div className="twoCols"><label>Mobile<input name="phone" type="tel" defaultValue={basic?.phone} autoComplete="tel" /></label><label>Other number<input name="phone_other" type="tel" defaultValue={basic?.phone_other} /></label></div>
+      <div className="twoCols"><label>House number or name<input name="address_house" defaultValue={basic?.address_house} /></label><label>Address line 1<input name="address_line1" defaultValue={basic?.address_line1} /></label></div>
+      <div className="twoCols"><label>Address line 2<input name="address_line2" defaultValue={basic?.address_line2} /></label><label>Town or city<input name="town" defaultValue={basic?.town} /></label></div>
+      <div className="twoCols"><label>County or area<input name="county" defaultValue={basic?.county} /></label><label>Postcode<input name="postcode" defaultValue={basic?.postcode} /></label></div>
+      <h4 className="formSection">Next of kin / parent / guardian</h4>
+      <div className="twoCols"><label>First name *<input name="kin_first_name" required defaultValue={basic?.kin_first_name} /></label><label>Last name *<input name="kin_last_name" required defaultValue={basic?.kin_last_name} /></label></div>
+      <div className="twoCols"><label>Mobile *<input name="kin_mobile" type="tel" required defaultValue={basic?.kin_mobile} /></label><label>Email *<input name="kin_email" type="email" required defaultValue={basic?.kin_email} /></label></div>
+      <label>Relationship to member<input name="kin_relationship" defaultValue={basic?.kin_relationship} placeholder="e.g. Parent, partner, friend" /></label>
+      <label className="check"><input type="checkbox" name="kin_is_primary_contact" defaultChecked={basic?.kin_is_primary_contact === 'on'} /><span>This is the primary contact instead of the member.</span></label>
+      <div className="twoCols"><label>Contact 2 name<input name="contact2_name" defaultValue={basic?.contact2_name} /></label><label>Contact 2 mobile<input name="contact2_mobile" type="tel" defaultValue={basic?.contact2_mobile} /></label></div>
+      <div className="twoCols"><label>Contact 2 email<input name="contact2_email" type="email" defaultValue={basic?.contact2_email} /></label><label>Contact 2 relationship<input name="contact2_relationship" defaultValue={basic?.contact2_relationship} /></label></div>
+      <h4 className="formSection">Medical information</h4>
+      <label>Any injuries, allergies, disabilities, illnesses or relevant health concerns your instructors should know about?<textarea name="health_notes" rows="4" defaultValue={basic?.health_notes} placeholder="Add health notes…" /></label>
+      <label className="check"><input type="checkbox" name="no_health_issues" defaultChecked={basic?.no_health_issues === 'on'} /><span>Tick if no health issues.</span></label>
+      <button className="button wide">Next</button>
+    </form> : <form className="form" onSubmit={submit}>
+      <h4 className="formSection">Account password</h4>
+      <p className="adminMeta">Create a password to log in and view or update your bookings. You will only be able to log in after the club has accepted your sign-up.</p>
+      <div className="twoCols"><label>Password *<input name="password" type="password" required minLength="8" autoComplete="new-password" /></label><label>Confirm password *<input name="confirm_password" type="password" required minLength="8" autoComplete="new-password" /></label></div>
+      <h4 className="formSection">Terms &amp; conditions</h4>
+      <label className="check"><input type="checkbox" name="agree_terms" required /><span>I confirm that the information above is correct to the best of my knowledge and agree to ORTU Fitness storing it to manage my membership.</span></label>
+      <h4 className="formSection">Data protection &amp; use</h4>
+      <p className="adminMeta">Data protection best practice requires you to opt in for the club to use your data. The first two options are required.</p>
+      <label className="check"><input type="checkbox" name="dp_legal" required /><span>I agree to ORTU Fitness using my data for legal reasons associated with the running of the club.</span></label>
+      <label className="check"><input type="checkbox" name="dp_services" required /><span>I agree to ORTU Fitness using my data so that it can provide me with the club's services.</span></label>
+      <label className="check"><input type="checkbox" name="dp_marketing" /><span>I agree to ORTU Fitness using my data so that I can receive benefits as part of my membership, including occasional marketing info.</span></label>
+      {error && <p className="formError">{error}</p>}
+      <div className="twoCols"><button type="button" className="button outline" onClick={() => setStep(1)}>Back</button><button className="button" disabled={busy}>{busy ? 'Sending…' : 'Submit request'}</button></div>
+    </form>}
+  </Modal>
 }
 
 const ADMIN_KEY_STORE = 'ortu_admin_key'
@@ -253,7 +356,7 @@ function AdminModal({ onClose, onChanged }) {
     </div>
     {error && <p className="formError">{error}</p>}
     {tab === 'classes' && <AdminClasses sessions={sessions} adminRequest={adminRequest} refresh={() => { loadSessions().catch((e) => setError(e.message)); onChanged() }} />}
-    {tab === 'members' && <AdminMembers data={members} refresh={() => loadMembers().catch((e) => setError(e.message))} />}
+    {tab === 'members' && <AdminMembers data={members} adminRequest={adminRequest} refresh={() => loadMembers().catch((e) => setError(e.message))} />}
   </Modal>
 }
 
@@ -333,17 +436,52 @@ function AdminCreateClass({ adminRequest, onCreated }) {
   </form>
 }
 
-function AdminMembers({ data, refresh }) {
+function MemberDetails({ m }) {
+  return <div className="adminPanel memberDetails">
+    <p className="adminMeta">{m.date_of_birth ? `Date of birth ${shortDate(m.date_of_birth)} · ` : ''}{m.phone_other ? `Other number ${m.phone_other} · ` : ''}{m.address || 'No address given'}</p>
+    <p className="adminMeta"><b>Next of kin:</b> {m.kin?.name ? `${m.kin.name}${m.kin.relationship ? ` (${m.kin.relationship})` : ''} · ${[m.kin.mobile, m.kin.email].filter(Boolean).join(' · ')}${m.kin.is_primary_contact ? ' · primary contact' : ''}` : 'not given'}</p>
+    {m.contact2?.name && <p className="adminMeta"><b>Contact 2:</b> {m.contact2.name}{m.contact2.relationship ? ` (${m.contact2.relationship})` : ''} · {[m.contact2.mobile, m.contact2.email].filter(Boolean).join(' · ')}</p>}
+    <p className="adminMeta"><b>Medical:</b> {m.no_health_issues ? 'No health issues declared' : (m.health_notes || 'Not provided')}</p>
+  </div>
+}
+
+function AdminMembers({ data, adminRequest, refresh }) {
+  const [openId, setOpenId] = useState(null)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   if (!data) return <p className="adminMeta">Loading members…</p>
   const base = data.gocardless_dashboard_url
+  const pending = data.members.filter((m) => m.approval_status === 'pending')
+  const rest = data.members.filter((m) => m.approval_status !== 'pending')
+  const decide = async (member, action) => {
+    setError(''); setNotice('')
+    try {
+      const result = await adminRequest(`/admin/members/${member.id}/approval`, { method: 'POST', body: JSON.stringify({ action }) })
+      const mail = result.notification_email === 'sent' ? ' Notification email sent.' : result.notification_email === 'failed' ? ' The notification email could not be sent.' : ''
+      setNotice(`${member.first_name} ${member.last_name} ${action === 'approve' ? 'approved.' : 'declined.'}${mail}`)
+      refresh()
+    } catch (e) { setError(e.message) }
+  }
   return <div>
+    {error && <p className="formError">{error}</p>}{notice && <p className="formSuccess">{notice}</p>}
+    {pending.length > 0 && <>
+      <h4 className="formSection">Member record requests ({pending.length})</h4>
+      {pending.map((member) => <div className="adminMemberCard" key={member.id}>
+        <div><b>{member.first_name} {member.last_name}</b><span className="statusTag warn">Awaiting approval</span></div>
+        <p className="adminMeta">{member.email}{member.phone ? ` · ${member.phone}` : ''} · requested {shortDate(member.joined_at)}</p>
+        <MemberDetails m={member} />
+        <div className="adminActions"><button onClick={() => decide(member, 'approve')}>Approve</button><button onClick={() => decide(member, 'decline')}>Decline</button></div>
+      </div>)}
+    </>}
     <div className="adminToolbar">
-      <p className="adminMeta">{data.members.length} member{data.members.length === 1 ? '' : 's'} · payment records open in the GoCardless dashboard</p>
+      <p className="adminMeta">{rest.length} member{rest.length === 1 ? '' : 's'} · payment records open in the GoCardless dashboard</p>
       <button className="button small" onClick={refresh}>Refresh</button>
     </div>
-    {data.members.length ? data.members.map((member) => <div className="adminMemberCard" key={member.id}>
-      <div><b>{member.first_name} {member.last_name}</b>{member.marketing_opt_in && <span className="statusTag good">Marketing OK</span>}</div>
+    {rest.length ? rest.map((member) => <div className="adminMemberCard" key={member.id}>
+      <div><b>{member.first_name} {member.last_name}</b>{member.approval_status === 'declined' && <span className="statusTag bad">Declined</span>}{member.marketing_opt_in && <span className="statusTag good">Marketing OK</span>}</div>
       <p className="adminMeta">{member.email}{member.phone ? ` · ${member.phone}` : ''} · joined {shortDate(member.joined_at)} · {member.confirmed_bookings} booking{member.confirmed_bookings === 1 ? '' : 's'}</p>
+      <button type="button" className="linkButton" onClick={() => setOpenId(openId === member.id ? null : member.id)}>{openId === member.id ? 'Hide record details' : 'Show record details'}</button>
+      {openId === member.id && <MemberDetails m={member} />}
       {member.memberships.map((membership) => {
         const [label, tone] = MEMBERSHIP_STATUS[membership.status] || [membership.status, '']
         return <div className="membershipLine" key={membership.id}>
@@ -357,8 +495,8 @@ function AdminMembers({ data, refresh }) {
           </span>
         </div>
       })}
-      {!member.memberships.length && <p className="adminMeta">No membership records.</p>}
-    </div>) : <p className="emptySmall">No members yet. They appear here as soon as someone chooses a plan.</p>}
+      {!member.memberships.length && <p className="adminMeta">No membership records yet — approved but no plan purchased.</p>}
+    </div>) : <p className="emptySmall">No members yet. They appear here as soon as a member record request arrives.</p>}
   </div>
 }
 

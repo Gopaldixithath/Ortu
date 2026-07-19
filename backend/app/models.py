@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -18,6 +18,32 @@ class FitnessMember(Base):
     phone = Column(String(60), nullable=True)
     access_token_hash = Column(String(64), nullable=False, unique=True, index=True)
     marketing_opt_in = Column(Boolean, nullable=False, server_default="false")
+    password_hash = Column(String(255), nullable=True)
+    approval_status = Column(String(20), nullable=False, server_default="approved", index=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    date_of_birth = Column(Date, nullable=True)
+    phone_other = Column(String(60), nullable=True)
+    address_house = Column(String(120), nullable=True)
+    address_line1 = Column(String(255), nullable=True)
+    address_line2 = Column(String(255), nullable=True)
+    town = Column(String(120), nullable=True)
+    county = Column(String(120), nullable=True)
+    postcode = Column(String(20), nullable=True)
+    kin_first_name = Column(String(120), nullable=True)
+    kin_last_name = Column(String(120), nullable=True)
+    kin_mobile = Column(String(60), nullable=True)
+    kin_email = Column(String(320), nullable=True)
+    kin_relationship = Column(String(120), nullable=True)
+    kin_is_primary_contact = Column(Boolean, nullable=False, server_default="false")
+    contact2_name = Column(String(180), nullable=True)
+    contact2_mobile = Column(String(60), nullable=True)
+    contact2_email = Column(String(320), nullable=True)
+    contact2_relationship = Column(String(120), nullable=True)
+    health_notes = Column(Text, nullable=True)
+    no_health_issues = Column(Boolean, nullable=False, server_default="false")
+    terms_agreed_at = Column(DateTime(timezone=True), nullable=True)
+    dp_legal = Column(Boolean, nullable=False, server_default="false")
+    dp_services = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
