@@ -206,7 +206,7 @@ def start_membership_checkout(payload: MembershipCheckout, request: Request, db:
             last_name=member.last_name,
             email=member.email,
             redirect_uri=complete_uri,
-            exit_uri=f"{public_url}?payment=cancelled",
+            exit_uri=f"{public_url}/?payment=cancelled",
         )
     except gocardless.GoCardlessError as exc:
         db.rollback()
@@ -235,11 +235,11 @@ def complete_membership(
     )
     public_url = _public_url(request)
     if not membership:
-        return RedirectResponse(f"{public_url}?payment=failed", status_code=303)
+        return RedirectResponse(f"{public_url}/?payment=failed", status_code=303)
     if membership.status == "active":
-        return RedirectResponse(f"{public_url}?payment=success&membership_token={membership_token}", status_code=303)
+        return RedirectResponse(f"{public_url}/?payment=success&membership_token={membership_token}", status_code=303)
     if id and membership.gocardless_billing_flow_id and not hmac.compare_digest(id, membership.gocardless_billing_flow_id):
-        return RedirectResponse(f"{public_url}?payment=failed", status_code=303)
+        return RedirectResponse(f"{public_url}/?payment=failed", status_code=303)
     try:
         provider = gocardless.fulfil_membership(
             billing_request_id=str(membership.gocardless_billing_request_id or ""),
@@ -250,7 +250,7 @@ def complete_membership(
     except gocardless.GoCardlessError:
         membership.status = "payment_failed"
         db.commit()
-        return RedirectResponse(f"{public_url}?payment=failed", status_code=303)
+        return RedirectResponse(f"{public_url}/?payment=failed", status_code=303)
     now = _now()
     plan = PLAN_BY_SLUG[membership.plan_slug]
     membership.status = "active"
@@ -261,7 +261,7 @@ def complete_membership(
     membership.gocardless_subscription_id = provider.get("subscription_id")
     membership.gocardless_payment_id = provider.get("payment_id")
     db.commit()
-    return RedirectResponse(f"{public_url}?payment=success&membership_token={membership_token}", status_code=303)
+    return RedirectResponse(f"{public_url}/?payment=success&membership_token={membership_token}", status_code=303)
 
 
 def _membership_from_token(db: Session, value: str, *, lock: bool = False) -> FitnessMembership:

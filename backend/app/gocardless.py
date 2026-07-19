@@ -36,7 +36,15 @@ def _request(method: str, path: str, payload: dict[str, Any] | None = None) -> d
     )
     if response.status_code >= 400:
         try:
-            detail = response.json().get("error", {}).get("message")
+            error = response.json().get("error", {})
+            detail = error.get("message")
+            field_errors = "; ".join(
+                f"{item.get('field') or item.get('request_pointer') or 'request'}: {item['message']}"
+                for item in (error.get("errors") or [])
+                if item.get("message")
+            )
+            if field_errors:
+                detail = f"{detail or 'Validation failed'} — {field_errors}"
         except Exception:
             detail = None
         raise GoCardlessError(detail or f"GoCardless returned HTTP {response.status_code}.")
