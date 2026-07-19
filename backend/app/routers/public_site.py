@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import gocardless, twilio_verify
+from app import email_login, gocardless, twilio_verify
 from app.booking_rules import (
     FitnessRuleError,
     ensure_booking_window,
@@ -27,6 +27,7 @@ from app.membership_plans import ORTU_PLANS, PLAN_BY_SLUG
 from app.models import (
     FitnessClassBooking,
     FitnessClassSession,
+    FitnessLoginCode,
     FitnessMember,
     FitnessMembership,
     FitnessWebhookEvent,
@@ -179,8 +180,111 @@ def site_data(db: Session = Depends(get_db)):
         "plans": [plan.public_dict() for plan in ORTU_PLANS],
         "sessions": [_session_dict(row, int(counts.get(row.id, 0))) for row in sessions],
         "payments_ready": gocardless.is_configured(),
-        "member_login_enabled": twilio_verify.is_configured(),
+        "member_login_enabled": email_login.is_configured() or twilio_verify.is_configured(),
+        "member_login_channels": {"email": email_login.is_configured(), "phone": twilio_verify.is_configured()},
     }
+
+
+def _issue_membership_token(db: Session, member: FitnessMember) -> str:
+    memberships = (
+        db.query(FitnessMembership)
+        .filter(FitnessMembership.business_key == BUSINESS_KEY, FitnessMembership.member_id == member.id)
+        .order_by(FitnessMembership.created_at.desc())
+        .all()
+    )
+    membership = next((row for row in memberships if row.status == "active"), None) or (memberships[0] if memberships else None)
+    if not membership:
+        raise HTTPException(status_code=404, detail="This member has no membership records yet.")
+    token = _new_token()
+    membership.public_token_hash = _hash_token(token)
+    db.commit()
+    return token
+
+
+class EmailLoginStart(BaseModel):
+    email: EmailStr
+
+
+class EmailLoginVerify(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=4, max_length=10)
+
+
+def _member_by_email(db: Session, email: str) -> Optional[FitnessMember]:
+    return (
+        db.query(FitnessMember)
+        .filter(FitnessMember.business_key == BUSINESS_KEY, func.lower(FitnessMember.email) == email)
+        .first()
+    )
+
+
+@router.post("/member/login/email/start", status_code=202)
+def member_email_login_start(payload: EmailLoginStart, db: Session = Depends(get_db)):
+    if not email_login.is_configured():
+        raise HTTPException(status_code=503, detail="Member login by email is not configured yet.")
+    email = str(payload.email).strip().lower()
+    member = _member_by_email(db, email)
+    if not member:
+        raise HTTPException(status_code=404, detail="No membership was found for this email address. Use the address you gave when joining.")
+    now = _now()
+    recent = (
+        db.query(func.count(FitnessLoginCode.id))
+        .filter(FitnessLoginCode.member_id == member.id, FitnessLoginCode.created_at >= now - timedelta(minutes=15))
+        .scalar()
+        or 0
+    )
+    if int(recent) >= 5:
+        raise HTTPException(status_code=429, detail="Too many codes requested. Please wait a few minutes and try again.")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    db.add(FitnessLoginCode(business_key=BUSINESS_KEY, member_id=int(member.id), code_hash=_hash_token(code), expires_at=now + timedelta(minutes=10)))
+    db.commit()
+    try:
+        email_login.send(
+            member.email,
+            "Your ORTU Fitness sign-in code",
+            f"Hi {member.first_name},\n\n"
+            f"Your ORTU Fitness sign-in code is: {code}\n\n"
+            "It is valid for 10 minutes. If you did not request it, you can ignore this email.\n\n"
+            "ORTU Fitness",
+        )
+    except email_login.EmailError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "sent", "channel": "email"}
+
+
+@router.post("/member/login/email/verify")
+def member_email_login_verify(payload: EmailLoginVerify, db: Session = Depends(get_db)):
+    if not email_login.is_configured():
+        raise HTTPException(status_code=503, detail="Member login by email is not configured yet.")
+    email = str(payload.email).strip().lower()
+    member = _member_by_email(db, email)
+    if not member:
+        raise HTTPException(status_code=404, detail="No membership was found for this email address.")
+    now = _now()
+    candidates = (
+        db.query(FitnessLoginCode)
+        .filter(
+            FitnessLoginCode.member_id == member.id,
+            FitnessLoginCode.consumed_at.is_(None),
+            FitnessLoginCode.expires_at >= now,
+            FitnessLoginCode.attempts < 5,
+        )
+        .order_by(FitnessLoginCode.created_at.desc())
+        .all()
+    )
+    matched = None
+    supplied_hash = _hash_token(payload.code.strip())
+    for row in candidates:
+        row.attempts = int(row.attempts) + 1
+        if hmac.compare_digest(row.code_hash, supplied_hash):
+            matched = row
+            break
+    if not matched:
+        db.commit()
+        raise HTTPException(status_code=401, detail="That code is not right or has expired. Please try again.")
+    matched.consumed_at = now
+    db.commit()
+    return {"membership_token": _issue_membership_token(db, member)}
 
 
 class MemberLoginStart(BaseModel):
@@ -221,19 +325,7 @@ def member_login_verify(payload: MemberLoginVerify, db: Session = Depends(get_db
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not approved:
         raise HTTPException(status_code=401, detail="That code is not right or has expired. Please try again.")
-    memberships = (
-        db.query(FitnessMembership)
-        .filter(FitnessMembership.business_key == BUSINESS_KEY, FitnessMembership.member_id == member.id)
-        .order_by(FitnessMembership.created_at.desc())
-        .all()
-    )
-    membership = next((row for row in memberships if row.status == "active"), None) or (memberships[0] if memberships else None)
-    if not membership:
-        raise HTTPException(status_code=404, detail="This member has no membership records yet.")
-    token = _new_token()
-    membership.public_token_hash = _hash_token(token)
-    db.commit()
-    return {"membership_token": token}
+    return {"membership_token": _issue_membership_token(db, member)}
 
 
 @router.post("/memberships/checkout", status_code=201)

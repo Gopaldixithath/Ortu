@@ -83,6 +83,19 @@ class FitnessClassBooking(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+class FitnessLoginCode(Base):
+    __tablename__ = "fitness_login_codes"
+
+    id = Column(BigInteger, primary_key=True)
+    business_key = Column(String(80), nullable=False)
+    member_id = Column(BigInteger, ForeignKey("fitness_members.id"), nullable=False, index=True)
+    code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    attempts = Column(Integer, nullable=False, server_default="0")
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class FitnessWebhookEvent(Base):
     __tablename__ = "fitness_webhook_events"
 

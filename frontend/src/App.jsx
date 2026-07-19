@@ -124,9 +124,9 @@ function App() {
 
     <footer><div><Mark /><p>Small-group health and fitness with room for everyone to progress.</p></div><div><b>EXPLORE</b><a href="#classes">Classes</a><a href="#memberships">Memberships</a><a href="#about">Why ORTU</a></div><div><b>MEMBERS</b><button onClick={() => setShowMember(true)}>My bookings</button><button onClick={() => setShowAdmin(true)}>Studio login</button></div><div><b>PAYMENTS</b><p>Securely processed by GoCardless</p><p>Cancellation cutoff: 1 hour</p></div></footer>
 
-    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} phoneForLogin={site.member_login_enabled} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
+    {joinPlan && <JoinModal plan={joinPlan} paymentsReady={site.payments_ready} phoneForLogin={!!site.member_login_channels?.phone} onClose={() => setJoinPlan(null)} setNotice={setNotice} />}
     {bookingSession && <BookingModal session={bookingSession} membershipToken={membershipToken} onClose={() => setBookingSession(null)} onBooked={() => { setBookingSession(null); loadSite(); setNotice('Class booked — we look forward to seeing you.'); setShowMember(true) }} />}
-    {showMember && <MemberModal initialToken={membershipToken} loginEnabled={site.member_login_enabled} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
+    {showMember && <MemberModal initialToken={membershipToken} channels={site.member_login_channels || {}} onToken={(token) => { setMembershipToken(token); localStorage.setItem(MEMBERSHIP_KEY, token) }} onClose={() => setShowMember(false)} onChanged={loadSite} />}
     {showAdmin && <AdminModal onClose={() => setShowAdmin(false)} onChanged={loadSite} />}
   </div>
 }
@@ -151,34 +151,55 @@ function BookingModal({ session, membershipToken, onClose, onBooked }) {
   return <Modal title="Confirm your class" onClose={onClose}><div className="bookingConfirm"><span className="pill">{session.coach_name}</span><h3>{session.name}</h3><p>{formatDate(session.start_at)}</p><p>{session.location}</p><div className="bookingRule"><b>{session.remaining} spaces currently available</b><span>Bookings are confirmed live and cannot exceed the class capacity.</span></div>{error && <p className="formError">{error}</p>}<button className="button wide" disabled={busy} onClick={confirm}>{busy ? 'Securing your space…' : 'Confirm booking'}</button></div></Modal>
 }
 
-function MemberModal({ initialToken, loginEnabled, onToken, onClose, onChanged }) {
+function MemberModal({ initialToken, channels = {}, onToken, onClose, onChanged }) {
   const [token, setToken] = useState(initialToken); const [dashboard, setDashboard] = useState(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false)
-  const [mode, setMode] = useState(loginEnabled ? 'phone' : 'code')
-  const [phone, setPhone] = useState(''); const [channel, setChannel] = useState('whatsapp'); const [sent, setSent] = useState(false); const [otp, setOtp] = useState('')
+  const [mode, setMode] = useState(channels.email ? 'email' : channels.phone ? 'phone' : 'code')
+  const [email, setEmail] = useState(''); const [phone, setPhone] = useState(''); const [channel, setChannel] = useState('whatsapp')
+  const [sent, setSent] = useState(false); const [otp, setOtp] = useState('')
   const load = async (value = token) => { setBusy(true); setError(''); try { const data = await request(`/member?membership_token=${encodeURIComponent(value)}`); setDashboard(data); onToken(value) } catch (e) { setError(e.message) } finally { setBusy(false) } }
   useEffect(() => { if (initialToken) load(initialToken) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const sendCode = async () => { setBusy(true); setError(''); try { await request('/member/login/start', { method: 'POST', body: JSON.stringify({ phone, channel }) }); setSent(true) } catch (e) { setError(e.message) } finally { setBusy(false) } }
-  const verifyCode = async () => { setBusy(true); setError(''); try { const data = await request('/member/login/verify', { method: 'POST', body: JSON.stringify({ phone, code: otp }) }); setToken(data.membership_token); await load(data.membership_token) } catch (e) { setError(e.message); setBusy(false) } }
+  const switchMode = (next) => { setMode(next); setSent(false); setOtp(''); setError('') }
+  const sendCode = async () => {
+    setBusy(true); setError('')
+    try {
+      if (mode === 'email') await request('/member/login/email/start', { method: 'POST', body: JSON.stringify({ email }) })
+      else await request('/member/login/start', { method: 'POST', body: JSON.stringify({ phone, channel }) })
+      setSent(true)
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const verifyCode = async () => {
+    setBusy(true); setError('')
+    try {
+      const data = mode === 'email'
+        ? await request('/member/login/email/verify', { method: 'POST', body: JSON.stringify({ email, code: otp }) })
+        : await request('/member/login/verify', { method: 'POST', body: JSON.stringify({ phone, code: otp }) })
+      setToken(data.membership_token); await load(data.membership_token)
+    } catch (e) { setError(e.message); setBusy(false) }
+  }
   const cancel = async (bookingId) => { if (!window.confirm('Cancel this class? Your credit will be restored.')) return; try { await request(`/bookings/${bookingId}/cancel`, { method: 'POST', body: JSON.stringify({ membership_token: token }) }); await load(); onChanged() } catch (e) { setError(e.message) } }
   return <Modal title="My ORTU bookings" onClose={onClose}>{!dashboard ? <div className="form">
-    {mode === 'phone' ? <>
-      <label>Mobile number<input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900123" autoComplete="tel" disabled={sent} /></label>
+    {mode !== 'code' ? <>
+      {mode === 'email'
+        ? <label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" disabled={sent} /></label>
+        : <label>Mobile number<input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900123" autoComplete="tel" disabled={sent} /></label>}
       {!sent ? <>
-        <div className="channelPick"><span>Send my code by</span><button type="button" className={channel === 'whatsapp' ? 'active' : ''} onClick={() => setChannel('whatsapp')}>WhatsApp</button><button type="button" className={channel === 'sms' ? 'active' : ''} onClick={() => setChannel('sms')}>SMS</button></div>
+        {mode === 'phone' && <div className="channelPick"><span>Send my code by</span><button type="button" className={channel === 'whatsapp' ? 'active' : ''} onClick={() => setChannel('whatsapp')}>WhatsApp</button><button type="button" className={channel === 'sms' ? 'active' : ''} onClick={() => setChannel('sms')}>SMS</button></div>}
         {error && <p className="formError">{error}</p>}
-        <button className="button wide" disabled={busy || phone.trim().length < 7} onClick={sendCode}>{busy ? 'Sending…' : `Send code by ${channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`}</button>
+        <button className="button wide" disabled={busy || (mode === 'email' ? !email.includes('@') : phone.trim().length < 7)} onClick={sendCode}>{busy ? 'Sending…' : mode === 'email' ? 'Email me a sign-in code' : `Send code by ${channel === 'whatsapp' ? 'WhatsApp' : 'SMS'}`}</button>
       </> : <>
         <label>Enter the 6-digit code we sent you<input inputMode="numeric" value={otp} onChange={(e) => setOtp(e.target.value)} placeholder="123456" /></label>
         {error && <p className="formError">{error}</p>}
         <button className="button wide" disabled={busy || otp.trim().length < 4} onClick={verifyCode}>{busy ? 'Checking…' : 'Open my bookings'}</button>
-        <button type="button" className="linkButton" onClick={() => { setSent(false); setOtp(''); setError('') }}>Use a different number or resend</button>
+        <button type="button" className="linkButton" onClick={() => { setSent(false); setOtp(''); setError('') }}>Change details or resend the code</button>
       </>}
-      <button type="button" className="linkButton" onClick={() => { setMode('code'); setError('') }}>Have a membership access code instead?</button>
+      {mode === 'email' && channels.phone && <button type="button" className="linkButton" onClick={() => switchMode('phone')}>Log in with my mobile number instead</button>}
+      {mode === 'phone' && channels.email && <button type="button" className="linkButton" onClick={() => switchMode('email')}>Log in with my email instead</button>}
+      <button type="button" className="linkButton" onClick={() => switchMode('code')}>Have a membership access code instead?</button>
     </> : <>
       <label>Membership access code<input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Paste the code saved after joining" /></label>
       {error && <p className="formError">{error}</p>}
       <button className="button wide" disabled={busy || token.length < 20} onClick={() => load()}>{busy ? 'Loading…' : 'Open my membership'}</button>
-      {loginEnabled && <button type="button" className="linkButton" onClick={() => { setMode('phone'); setError('') }}>Log in with my mobile number instead</button>}
+      {(channels.email || channels.phone) && <button type="button" className="linkButton" onClick={() => switchMode(channels.email ? 'email' : 'phone')}>Log in with a one-time code instead</button>}
     </>}
   </div> : <div className="memberArea"><div className="memberHeader"><div><p>Welcome back</p><h3>{dashboard.member.first_name}</h3></div><div><span>{dashboard.membership.plan_name}</span><b>{dashboard.membership.remaining_classes == null ? 'Unlimited classes' : `${dashboard.membership.remaining_classes} credits left`}</b></div></div><h4>Upcoming bookings</h4>{dashboard.bookings.length ? dashboard.bookings.map((booking) => <article className="memberBooking" key={booking.booking_id}><div><b>{booking.session.name}</b><span>{formatDate(booking.session.start_at)}</span></div><button disabled={!booking.can_cancel} onClick={() => cancel(booking.booking_id)}>{booking.can_cancel ? 'Cancel booking' : 'Cancellation closed'}</button></article>) : <p className="emptySmall">No classes booked yet. Close this window and choose one from the timetable.</p>}{error && <p className="formError">{error}</p>}</div>}</Modal>
 }
