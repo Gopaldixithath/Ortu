@@ -23,15 +23,17 @@ def is_configured() -> bool:
     return bool(host and sender)
 
 
-def send(to: str, subject: str, body: str) -> None:
+def send(to: str, subject: str, body: str, html: str | None = None) -> None:
     host, port, username, password, sender = _config()
     if not (host and sender):
         raise EmailError("Email sending is not configured yet.")
     message = EmailMessage()
-    message["From"] = sender
+    message["From"] = sender if "<" in sender else f"ORTU Fitness <{sender}>"
     message["To"] = to
     message["Subject"] = subject
     message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
     try:
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=20) as server:

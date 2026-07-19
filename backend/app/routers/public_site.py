@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import email_login, gocardless, passwords, twilio_verify
+from app import email_login, email_templates, gocardless, passwords, twilio_verify
 from app.booking_rules import (
     FitnessRuleError,
     ensure_booking_window,
@@ -238,15 +238,9 @@ def member_email_login_start(payload: EmailLoginStart, db: Session = Depends(get
     code = f"{secrets.randbelow(1_000_000):06d}"
     db.add(FitnessLoginCode(business_key=BUSINESS_KEY, member_id=int(member.id), code_hash=_hash_token(code), expires_at=now + timedelta(minutes=10)))
     db.commit()
+    subject, text, html = email_templates.sign_in_code(member.first_name, code)
     try:
-        email_login.send(
-            member.email,
-            "Your ORTU Fitness sign-in code",
-            f"Hi {member.first_name},\n\n"
-            f"Your ORTU Fitness sign-in code is: {code}\n\n"
-            "It is valid for 10 minutes. If you did not request it, you can ignore this email.\n\n"
-            "ORTU Fitness",
-        )
+        email_login.send(member.email, subject, text, html)
     except email_login.EmailError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"status": "sent", "channel": "email"}
@@ -375,17 +369,9 @@ def member_signup(payload: MemberSignup, db: Session = Depends(get_db)):
     db.add(member)
     db.commit()
     if email_login.is_configured():
+        subject, text, html = email_templates.signup_received(member.first_name)
         try:
-            email_login.send(
-                member.email,
-                "We received your ORTU Fitness member record request",
-                f"Hi {member.first_name},\n\n"
-                "Thanks for your interest in joining ORTU Fitness — your member record request has been "
-                "received and is with the club for review.\n\n"
-                "You will get another email as soon as the club accepts your sign-up. After that you can "
-                "log in with your email address and password, choose a membership plan and book classes.\n\n"
-                "ORTU Fitness",
-            )
+            email_login.send(member.email, subject, text, html)
         except email_login.EmailError:
             pass
     return {"status": "pending", "detail": "Your member record request has been sent to the club."}
@@ -558,6 +544,20 @@ def complete_membership(
     membership.gocardless_subscription_id = provider.get("subscription_id")
     membership.gocardless_payment_id = provider.get("payment_id")
     db.commit()
+    if email_login.is_configured():
+        member = db.query(FitnessMember).filter(FitnessMember.id == membership.member_id).first()
+        if member:
+            price = f"£{membership.amount_pence / 100:.2f}" + ("/month" if membership.billing_kind == "recurring" else "")
+            if membership.remaining_classes is None:
+                credits_line = "Your plan includes unlimited classes."
+            else:
+                credits_line = f"Your plan includes {membership.remaining_classes} class credit{'s' if membership.remaining_classes != 1 else ''}"
+                credits_line += f", valid until {membership.ends_at:%d %b %Y}." if membership.ends_at else "."
+            subject, text, html = email_templates.membership_active(member.first_name, membership.plan_name, price, credits_line, public_url)
+            try:
+                email_login.send(member.email, subject, text, html)
+            except email_login.EmailError:
+                pass
     return RedirectResponse(f"{public_url}/?payment=success&membership_token={membership_token}", status_code=303)
 
 
@@ -878,27 +878,12 @@ def admin_member_approval(member_id: int, payload: MemberApproval, request: Requ
     db.commit()
     email_result = "not_configured"
     if email_login.is_configured():
-        site_url = _public_url(request)
+        if payload.action == "approve":
+            subject, text, html = email_templates.signup_approved(member.first_name, _public_url(request))
+        else:
+            subject, text, html = email_templates.signup_declined(member.first_name)
         try:
-            if payload.action == "approve":
-                email_login.send(
-                    member.email,
-                    "Your ORTU Fitness membership has been accepted",
-                    f"Hi {member.first_name},\n\n"
-                    "Great news — the club has accepted your member record request.\n\n"
-                    f"You can now log in with your email address and password at {site_url} "
-                    "(My bookings), choose your membership plan and start booking classes.\n\n"
-                    "See you in the studio!\n\nORTU Fitness",
-                )
-            else:
-                email_login.send(
-                    member.email,
-                    "Your ORTU Fitness member record request",
-                    f"Hi {member.first_name},\n\n"
-                    "Thank you for your interest in ORTU Fitness. Unfortunately the club has not been "
-                    "able to accept your member record request at this time. Please contact the studio "
-                    "if you would like to discuss it.\n\nORTU Fitness",
-                )
+            email_login.send(member.email, subject, text, html)
             email_result = "sent"
         except email_login.EmailError:
             email_result = "failed"
