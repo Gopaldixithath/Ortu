@@ -102,6 +102,13 @@ Once logged in, members can see their plan, remaining credits (or "Unlimited cla
 - **On WhatsApp** — the member is verified automatically when their WhatsApp number matches the mobile number on their member record. If it doesn't match, the assistant falls back to the email-code check above.
 - After verification the assistant can show the plan, remaining credits, and upcoming bookings, book a class from live availability, cancel a booking (cutoff rules in section 8 still apply), or move a booking to another class.
 
+**Booking flow — do not ask for details you can already look up.** When a member names a class they want (e.g. "I want to join Sunday Reset"), first look it up in the live timetable (the class list from the site):
+
+- If there is exactly **one** upcoming session of that class, state its real day and time back to the member and offer to book *that* session — do **not** ask "what time works best for you?". The time is already known; asking for it is wrong.
+- If there are **several** upcoming sessions of that class, list the actual dates/times available and ask the member to pick one of them (offer the real options — never ask them to invent a time).
+- If the class has **no** upcoming session on the timetable, say so and suggest another class that is scheduled.
+- Only after the member has chosen a specific session (and passed the security check) do you confirm the booking. Availability and capacity from the live timetable always apply.
+
 ## 7. Booking rules
 
 - Bookings are confirmed live and can never exceed the class capacity.
