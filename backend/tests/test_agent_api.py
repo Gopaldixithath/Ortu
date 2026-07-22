@@ -9,49 +9,33 @@ for the duration of each test.
 from __future__ import annotations
 
 import os
-
-os.environ["DATABASE_URL"] = "sqlite://"
-os.environ["ORTU_FITNESS_AGENT_KEY"] = "test-agent-key"
-
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # noqa: F401
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.pool import StaticPool
 
-import app.db as app_db
-from app.db import Base, SessionLocal
-from app.main import app
-from app.models import FitnessClassBooking, FitnessClassSession, FitnessLoginCode, FitnessMember, FitnessMembership
+from app.models import (
+    FitnessClassBooking,
+    FitnessClassSession,
+    FitnessLoginCode,
+    FitnessMember,
+    FitnessMembership,
+)
 from app.routers.public_site import _hash_token
 
-# One shared in-memory database for every thread TestClient uses.
-engine = create_engine(
-    "sqlite://",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-    future=True,
+# Shared single-engine harness: pins env + binds the app to one in-memory
+# SQLite database (see tests/_harness.py), so the whole suite uses the same
+# engine whether it is run via pytest or `python -m unittest`.
+from tests._harness import (
+    AGENT_HEADERS,
+    BUSINESS_KEY,
+    Base,
+    SessionLocal,
+    app,
+    engine,
 )
-app_db.engine = engine
-SessionLocal.configure(bind=engine)
-
-# SQLite only autoincrements INTEGER primary keys; render BigInteger as INTEGER.
-from sqlalchemy import BigInteger  # noqa: E402
-from sqlalchemy.ext.compiler import compiles  # noqa: E402
-
-
-@compiles(BigInteger, "sqlite")
-def _bigint_as_integer_on_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-AGENT_HEADERS = {"X-Ortu-Agent-Key": "test-agent-key"}
-BUSINESS_KEY = "ortu-fitness"
-
-
-def _naive_utc_now():
-    return datetime.utcnow()
+from tests._harness import naive_utc_now as _naive_utc_now
 
 
 class AgentApiTestCase(unittest.TestCase):

@@ -5,9 +5,20 @@ __pycache__/
 venv/
 *.egg-info/
 
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+
 # Node / frontend build output
 node_modules/
 frontend/dist/
+
+# Playwright E2E artifacts
+playwright-report/
+test-results/
+/e2e/playwright/.cache/
 
 # Environment / secrets
 .env
