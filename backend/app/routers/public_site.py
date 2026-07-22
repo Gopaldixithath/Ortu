@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
@@ -35,6 +36,8 @@ from app.models import (
 
 router = APIRouter(prefix="/api", tags=["ORTU Fitness"])
 BUSINESS_KEY = "ortu-fitness"
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -368,13 +371,22 @@ def member_signup(payload: MemberSignup, db: Session = Depends(get_db)):
     )
     db.add(member)
     db.commit()
+    email_result = "not_configured"
     if email_login.is_configured():
         subject, text, html = email_templates.signup_received(member.first_name)
         try:
             email_login.send(member.email, subject, text, html)
-        except email_login.EmailError:
-            pass
-    return {"status": "pending", "detail": "Your member record request has been sent to the club."}
+            email_result = "sent"
+        except email_login.EmailError as exc:
+            # Never fail the signup itself because of email; but make the
+            # failure visible instead of swallowing it silently.
+            email_result = "failed"
+            logger.warning("Signup confirmation email to %s failed: %s", member.email, exc)
+    return {
+        "status": "pending",
+        "detail": "Your member record request has been sent to the club.",
+        "notification_email": email_result,
+    }
 
 
 @router.post("/member/login/password")

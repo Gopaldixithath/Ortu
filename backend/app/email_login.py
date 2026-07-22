@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import smtplib
 from email.message import EmailMessage
+
+logger = logging.getLogger(__name__)
 
 
 class EmailError(RuntimeError):
@@ -34,6 +37,10 @@ def send(to: str, subject: str, body: str, html: str | None = None) -> None:
     message.set_content(body)
     if html:
         message.add_alternative(html, subtype="html")
+    logger.info(
+        "Sending email via SMTP host=%s port=%s starttls=%s auth=%s to=%s subject=%r",
+        host, port, port != 465, bool(username and password), to, message["Subject"],
+    )
     try:
         if port == 465:
             with smtplib.SMTP_SSL(host, port, timeout=20) as server:
@@ -55,4 +62,6 @@ def send(to: str, subject: str, body: str, html: str | None = None) -> None:
     except EmailError:
         raise
     except Exception as exc:
-        raise EmailError(f"Could not send the sign-in email: {exc}") from exc
+        logger.warning("SMTP send to %s failed: %s", to, exc)
+        raise EmailError(f"Could not send the email: {exc}") from exc
+    logger.info("SMTP send to %s succeeded.", to)
